@@ -1,0 +1,72 @@
+---
+- hosts: spark_master:spark_slaves
+  vars:
+      jdk_dir: 8u131-b11
+      jdk_archive: jdk-8u131-linux-x64.tar.gz
+      jdk_local_dir: jdk1.8.0_131
+      download_folder: ~/
+      bin_dir: /usr/bin
+      profile_path: /etc/profile.d
+      java_name: "{{ download_folder }}/{{ jdk_local_dir }}"
+      java_archive: "{{ download_folder }}/{{ jdk_archive }}"
+      download_url: http://download.oracle.com/otn-pub/java/jdk/{{jdk_dir}}/{{jdk_archive}}
+      java_version: 8
+      java_subversion: 131
+      java_build_custom: 11
+      jdk_version_detail_custom: "{{ java_version }}u{{ java_subversion }}-b{{ java_build_custom }}"
+      jdk_tarball_hash: d54c1d3a095b4ff2b6607d096fa80163
+      jdk_tarball_url: "http://download.oracle.com/otn-pub/java/jdk/{{ jdk_version_detail_custom }}/{{ jdk_tarball_hash }}/{{ jdk_archive }}"
+  tasks:
+   - name: Download Java on Master and Slave nodes
+     get_url: url={{ jdk_tarball_url }}  dest={{ java_archive }} headers="Cookie:' gpw_e24=http%3A%2F%2Fwww.oracle.com%2F; oraclelicense=accept-securebackup-cookie'" validate_certs=no mode=744
+     register: javadownload
+   - name: Setup Java installation directory on Master and Slave nodes
+     when: javadownload|success
+     unarchive:
+      src: ~/jdk-8u131-linux-x64.tar.gz
+      dest: ~/
+     register: javasetup
+   - name: Download Apache Spark on Master and Slave nodes
+     when: javasetup|success
+     get_url:
+      url: https://d3kbcqa49mib13.cloudfront.net/spark-2.2.0-bin-hadoop2.7.tgz
+      dest: ~/
+     register: sparkdownload
+   - name: Setup Apache Spark installation directory on Master and Slave nodes
+     when: sparkdownload|success
+     unarchive:
+      src: ~/spark-2.2.0-bin-hadoop2.7.tgz
+      dest: ~/
+- hosts: spark_master
+  vars:
+   local_home: "{{ lookup('env','HOME') }}"
+  tasks:
+   - name: Stop Spark Master
+     shell: "{{ local_home }}/spark-2.2.0-bin-hadoop2.7/sbin/stop-master.sh"
+     register: sparkmasterstopped
+   - name: Start Spark Master
+     when: sparkmasterstopped|success
+     shell: "{{ item }}"
+     environment:
+      - JAVA_HOME: "{{ local_home }}/jdk1.8.0_131"
+      - SPARK_LOCAL_IP: "{{ ansible_default_ipv4['address'] }}"
+     with_items:
+      - "{{ local_home }}/spark-2.2.0-bin-hadoop2.7/sbin/start-master.sh -h {{ ansible_default_ipv4['address'] }}"
+     register: sparkmasterstarted
+- hosts: spark_slaves
+  vars:
+   sparkmasterstarted: "{{ hostvars[groups['spark_master'][0]].sparkmasterstarted }}"
+   local_home: "{{ lookup('env','HOME') }}"
+  tasks:
+   - name: Stop Spark Slaves
+     when: sparkmasterstarted|success
+     shell: "{{local_home}}/spark-2.2.0-bin-hadoop2.7/sbin/stop-slave.sh"
+     register: sparkslavestopped
+   - name: Start Spark Slaves
+     when: sparkslavestopped|success
+     shell: "{{ item }}"
+     environment:
+      - JAVA_HOME: "{{ local_home }}/jdk1.8.0_131"
+      - SPARK_LOCAL_IP: "{{ ansible_default_ipv4['address'] }}"
+     with_items:
+      - "{{local_home}}/spark-2.2.0-bin-hadoop2.7/sbin/start-slave.sh spark://{{ groups['spark_master'][0] }}:7077"

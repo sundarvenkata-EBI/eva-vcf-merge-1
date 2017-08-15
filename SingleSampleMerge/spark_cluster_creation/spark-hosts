@@ -1,0 +1,5 @@
+[spark_master]
+127.0.0.1 #IP address of the spark master node
+[spark_slaves]
+192.168.0.1 #IP address of the spark slave nodes
+192.168.0.2

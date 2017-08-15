@@ -22,7 +22,7 @@ def processVariantMatchFile(uniqueVariantListFileName, matchOutputFileName, samp
     insertDefaultGenotypeToCassandra(sampleName, defaultGenotype)
     with gzip.open(uniqueVariantListFileName, "rb") as varListFile:
         with gzip.open(matchOutputFileName, "rb") as varMatchFile:
-            if defaultGenotype != "./.":
+            if defaultGenotype != "./." and defaultGenotype != ".|.":
                 for matchLine in varMatchFile:
                     chromMatch, varPosMatch, ref, alt, genotype, formatMatch, sampleinfoMatch = matchLine.strip().split("\t")
                     varPosMatch = long(varPosMatch)
@@ -78,7 +78,7 @@ def getNumMatchedVariants(keyspaceName, sampleInsertLogTableName, studyName, sam
         raise Exception("Could not find number of matched variants for the sample: {0}".format(sampleName))
 
 
-def matchVariantPosInStudyFiles(bcfToolsDir, studyName, defaultRefGenotype, studyFileName, numTotVariants, studyFilesInputDir, variantPositionFileName, cassandraNodeIPs, keyspaceName, sampleDefaultsTableName, variantTableName, sampleInsertLogTableName):
+def matchVariantPosInStudyFiles(bcfToolsDir, studyName, defaultGenotype, altGenotype, studyFileName, numTotVariants, studyFilesInputDir, variantPositionFileName, cassandraNodeIPs, keyspaceName, sampleDefaultsTableName, variantTableName, sampleInsertLogTableName):
     global cluster, session, defaultGenotypeInsertPrepStmt, variantInsertPrepStmt
     cluster = Cluster(cassandraNodeIPs)
     session = cluster.connect(keyspaceName)
@@ -107,9 +107,9 @@ def matchVariantPosInStudyFiles(bcfToolsDir, studyName, defaultRefGenotype, stud
         if not errlines:
             numMatchedVariants = getNumMatchedVariants(keyspaceName, sampleInsertLogTableName, studyName, sampleName)
             if (numTotVariants*1.0/numMatchedVariants) > 2:
-                processVariantMatchFile(variantPositionFileName, matchOutputFileName, sampleName, "./.")
+                processVariantMatchFile(variantPositionFileName, matchOutputFileName, sampleName, altGenotype)
             else:
-                processVariantMatchFile(variantPositionFileName, matchOutputFileName, sampleName, defaultRefGenotype)
+                processVariantMatchFile(variantPositionFileName, matchOutputFileName, sampleName, defaultGenotype)
         else:
             returnErrMsg = "Error in processing file:{0}".format(chosenFileToProcess) + os.linesep + os.linesep.join(errlines)
     except Exception, e:
@@ -121,16 +121,17 @@ def matchVariantPosInStudyFiles(bcfToolsDir, studyName, defaultRefGenotype, stud
         return None
 
 
-if len(sys.argv) != 7:
-    print("Usage: ProcessVariantMatches.py <Study Name> <Default Reference Genotype> <Full Path to study files> <Cassandra node IP1> <Cassandra node IP2> <BCF Tools Directory>")
+if len(sys.argv) != 8:
+    print("Usage: ProcessVariantMatches.py <Study PRJ ID> <Default Genotype> <Alternate Genotype> <Full Path to study files> <Cassandra node IP1> <Cassandra node IP2> <BCF Tools Directory>")
     sys.exit(1)
 
 # Parse arguments
 studyName = sys.argv[1]
-defaultRefGenotype = sys.argv[2]
-studyFilesInputDir = sys.argv[3]
-cassandraNodeIPs = [sys.argv[4], sys.argv[5]]
-bcfToolsDir = sys.argv[6]
+defaultGenotype = sys.argv[2]
+altGenotype = sys.argv[3]
+studyFilesInputDir = sys.argv[4]
+cassandraNodeIPs = [sys.argv[5], sys.argv[6]]
+bcfToolsDir = sys.argv[7]
 
 # Get the list of study files
 os.chdir(studyFilesInputDir)
@@ -178,7 +179,7 @@ if not os.path.isfile(variantPositionFileName):
 
 numPartitions = len(studyFileNames)
 studyIndivRDD = sc.parallelize(studyFileNames, numPartitions)
-processResults = studyIndivRDD.map(lambda studyFileName: matchVariantPosInStudyFiles(bcfToolsDir, studyName, defaultRefGenotype, studyFileName, numTotVariants, studyFilesInputDir, variantPositionFileName, cassandraNodeIPs, keyspaceName, sampleDefaultsTableName, variantTableName, sampleInsertLogTableName)).collect()
+processResults = studyIndivRDD.map(lambda studyFileName: matchVariantPosInStudyFiles(bcfToolsDir, studyName, defaultGenotype, altGenotype, studyFileName, numTotVariants, studyFilesInputDir, variantPositionFileName, cassandraNodeIPs, keyspaceName, sampleDefaultsTableName, variantTableName, sampleInsertLogTableName)).collect()
 for result in processResults:
     if result:
         print(result)

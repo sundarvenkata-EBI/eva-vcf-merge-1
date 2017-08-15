@@ -155,7 +155,7 @@ def processStudyFiles(studyName, studyFileName, cassandraNodeIPs, keyspaceName, 
 # ftp = ftplib.FTP(ftpSite, ftpUserName)
 # ftp.cwd(studyFilesDir)
 if len(sys.argv) != 6:
-    print("Usage: SingleSampleMerge.py <Study Name> <Full Path to study files> <Cassandra node IP1> <Cassandra node IP2> <BCF Tools Directory>")
+    print("Usage: SingleSampleMerge.py <Study PRJ ID> <Full Path to study files> <Cassandra node IP1> <Cassandra node IP2> <BCF Tools Directory>")
     sys.exit(1)
 
 # Parse arguments

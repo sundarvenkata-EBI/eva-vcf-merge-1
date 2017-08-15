@@ -46,8 +46,15 @@ spark_cluster_creation - Ansible playbook to create a Spark cluster.
    
 7. After the above steps are run, the following output tables are created in Cassandra in the "variant_ksp" keyspace:
 
-    1. variant_ksp.variants_\<Study PRJ ID\> (ex: variant_ksp.variants_PRJEB21300)
-    ![variants](https://pasteboard.co/GFMiO2e.png)
-    2. variant_ksp.headers_\<Study PRJ ID\> (ex: variant_ksp.headers_PRJEB21300)
-    3. variant_ksp.sample_insert_log
-    4. variant_ksp.study_info_\<Study PRJ ID\> (ex: variant_ksp.study_info_PRJEB21300)
+    1. variant_ksp.variants_\<Study PRJ ID\> (ex: variant_ksp.variants_PRJEB21300) - Variant information processed from individual sample files ordered by Chromosome, Start position and Sample Name.
+    ![variants_table](images/variants_table.jpg)
+    2. variant_ksp.headers_\<Study PRJ ID\> (ex: variant_ksp.headers_PRJEB21300) - Header information for each sample file that was processed.
+    ![headers_table](images/headers_table.jpg)
+    3. variant_ksp.sample_defaults_\<Study PRJ ID\> (ex: variant_ksp.sample_defaults_PRJEB21300)
+    ![sample_defaults_table](images/sample_defaults_table.jpg)
+    4. variant_ksp.sample_insert_log - Commit log that shows the running log of sample files that have been inserted (as denoted by the insert_flag).
+    ![sample_insert_log_table](images/sample_insert_log.jpg)
+    5. variant_ksp.study_info_\<Study PRJ ID\> (ex: variant_ksp.study_info_PRJEB21300) - Total and distinct counts of variants that were inserted from all the samples.
+    ![study_info_table](images/study_info_table.jpg)
+    
+8. The output tables above should be used for processing the entries into 

@@ -47,7 +47,7 @@ spark_cluster_creation - Ansible playbook to create a Spark cluster.
 7. After the above steps are run, the following output tables are created in Cassandra in the "variant_ksp" keyspace:
 
     1. variant_ksp.variants_\<Study PRJ ID\> (ex: variant_ksp.variants_PRJEB21300)
-    [variants]!(https://pasteboard.co/GFMiO2e.png)
+    ![variants](https://pasteboard.co/GFMiO2e.png)
     2. variant_ksp.headers_\<Study PRJ ID\> (ex: variant_ksp.headers_PRJEB21300)
     3. variant_ksp.sample_insert_log
     4. variant_ksp.study_info_\<Study PRJ ID\> (ex: variant_ksp.study_info_PRJEB21300)

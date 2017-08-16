@@ -7,6 +7,35 @@ from cassandra.query import BatchStatement, BatchType
 from pyspark import SparkConf, SparkContext
 from pyspark.sql import SQLContext
 
+# Implementation of indexOfDifference
+def stringDiffIndex(string1, string2):
+    if string1 is None or string2 is None: return -1
+    string1Length = len(string1)
+    string2Length = len(string2)
+    shorterLength = min(string1Length, string2Length)
+    longerLength = max(string1Length, string2Length)
+    index = -1
+    for i in xrange(longerLength):
+        if (i == shorterLength) or (string1[i] != string2[i]):
+            index = i
+            break
+    return index
+
+def getNormalizedStartPos(start_pos, ref, alt):
+    # Remove trailing bases
+    refReversed = ref[::-1]
+    altReversed = alt[::-1]
+    indexOfDifference = stringDiffIndex(refReversed, altReversed)
+    ref = refReversed[indexOfDifference:][::-1]
+    alt = altReversed[indexOfDifference:][::-1]
+
+    # Remove leading bases
+    indexOfDifference = stringDiffIndex(ref,alt)
+    start = start_pos + indexOfDifference
+    length = max(len(ref), len(alt))
+    end = start_pos + length - 1
+    return start
+
 def getSampleName(bcfToolsDir, vcfFileName):
     sampleNameCmd = subprocess.Popen(
         "{0}/bin/bcftools query -l {1}".format(bcfToolsDir, vcfFileName), shell=True,
@@ -33,9 +62,16 @@ def writeVariantToCassandra(linesToWrite, sampleName):
             qual = lineComps[5].strip()
             qualFilter = lineComps[6].strip()
             info = lineComps[7].strip()
-            sampleInfoFormat = lineComps[8].strip()
-            sampleInfo = lineComps[9].strip()
+            sampleInfoFormat, sampleInfo = None, None
+            if len(lineComps) > 8:
+                sampleInfoFormat = lineComps[8].strip()
+                sampleInfo = lineComps[9].strip()
             chunk = int(position/chunkSize)
+
+            for altAllele in alt.split(","):
+                start_pos = getNormalizedStartPos(position, ref, altAllele)
+                batch.add(uniquePosInsertStmt.bind([chromosome, chunk, start_pos]))
+
             variantID = chromosome + "_" + str(position).zfill(12) + "_" + hashlib.md5(ref + "_" + alt).hexdigest() + sampleName.zfill(12)
             boundStmt = variantInsertStmt.bind([chromosome, chunk, position, ref, alt, qual, qualFilter, info, sampleInfoFormat, sampleInfo, rsID, variantID, sampleName])
             batch.add(boundStmt)
@@ -94,11 +130,11 @@ def getSampleProcessedStatus(keyspaceName, sampleInsertLogTableName, studyName, 
     if firstRow.insert_flag == 1: return True
     return True
 
-def processStudyFiles(studyName, studyFileName, cassandraNodeIPs, keyspaceName, headerTableName, variantTableName, sampleInsertLogTableName, bcfToolsDir):
+def processStudyFiles(studyName, studyFileName, cassandraNodeIPs, keyspaceName, headerTableName, variantTableName, sampleInsertLogTableName, uniquePosTableName, bcfToolsDir):
 
     totVarsInSample = 0
     filterCommandResult = -1
-    global cluster, session, variantInsertStmt, headerInsertStmt
+    global cluster, session, variantInsertStmt, headerInsertStmt, uniquePosInsertStmt
     samplePrefix, errFileContents, returnErrMsg, cluster, session = None, None, None, None, None
     cluster = Cluster(cassandraNodeIPs)
     session = cluster.connect(keyspaceName)
@@ -111,6 +147,7 @@ def processStudyFiles(studyName, studyFileName, cassandraNodeIPs, keyspaceName, 
         variantInsertStmt = session.prepare(
             "insert into {0}.{1} (chrom,chunk,start_pos,ref,alt,qual,filter,info,sampleinfoformat,sampleinfo,var_id,var_uniq_id,sampleName) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)".format(keyspaceName, variantTableName))
         headerInsertStmt = session.prepare("INSERT INTO {0}.{1} (samplename, header) VALUES (?,?)".format(keyspaceName,headerTableName))
+        uniquePosInsertStmt = session.prepare("INSERT INTO {0}.{1} (chrom, chunk, start_pos) VALUES (?,?,?)".format(keyspaceName,uniquePosTableName))
 
         samplePrefix = os.path.basename(studyFileName).split(".")[0]
         baseDir = os.path.dirname(studyFileName)
@@ -176,6 +213,7 @@ variantTableName = "variants_{0}".format(studyName.lower())
 headerTableName = "headers_{0}".format(studyName.lower())
 sampleInsertLogTableName = "sample_insert_log"
 studyInfoTableName = "study_info_{0}".format(studyName.lower())
+uniquePosTableName = "uniq_pos_{0}".format(studyName.lower())
 local_cluster_var = Cluster(cassandraNodeIPs)
 local_session_var = local_cluster_var.connect()
 local_session_var.execute("create keyspace if not exists {0}".format(keyspaceName)  + " with replication = {'class': 'SimpleStrategy', 'replication_factor' : 1};")
@@ -183,6 +221,7 @@ local_session_var.execute("create table if not exists {0}.{1} (samplename varcha
 local_session_var.execute("create table if not exists {0}.{1} (chrom varchar, chunk int, start_pos bigint, ref varchar, alt varchar, qual varchar, filter varchar, info varchar, sampleinfoformat varchar, sampleinfo  varchar, var_id varchar, var_uniq_id varchar, sampleName varchar,  primary key((chrom, chunk), start_pos, ref, alt, samplename));".format(keyspaceName,variantTableName))
 local_session_var.execute("create table if not exists {0}.{1} (studyname varchar, samplename varchar, insert_flag int, num_variants bigint, primary key((studyname, samplename)));".format(keyspaceName,sampleInsertLogTableName))
 local_session_var.execute("create table if not exists {0}.{1} (studyname varchar, tot_num_variants bigint, distinct_num_variants bigint, primary key(studyname));".format(keyspaceName,studyInfoTableName))
+local_session_var.execute("create table if not exists {0}.{1} (chrom varchar, chunk int, start_pos bigint, primary key((chrom,chunk), start_pos));".format(keyspaceName,uniquePosTableName))
 
 # Process study files in parallel
 conf = SparkConf().setMaster("spark://{0}:7077".format(get_ip_address())).setAppName("SingleSampleVCFMerge").set("spark.cassandra.connection.host", cassandraNodeIPs[0]).set("spark.cassandra.read.timeout_ms", 1200000).set("spark.cassandra.connection.timeout_ms", 1200000)
@@ -190,7 +229,7 @@ sc = SparkContext(conf=conf)
 sc.setLogLevel("INFO")
 numPartitions = len(studyFileNames)
 studyIndivRDD = sc.parallelize(studyFileNames, numPartitions)
-results = studyIndivRDD.map(lambda entry: processStudyFiles(studyName, studyFilesInputDir + os.path.sep + entry, cassandraNodeIPs, keyspaceName, headerTableName, variantTableName, sampleInsertLogTableName, bcfToolsDir)).collect()
+results = studyIndivRDD.map(lambda entry: processStudyFiles(studyName, studyFilesInputDir + os.path.sep + entry, cassandraNodeIPs, keyspaceName, headerTableName, variantTableName, sampleInsertLogTableName, uniquePosTableName, bcfToolsDir)).collect()
 
 
 # region Validate Cassandra record counts against record counts in the source file
@@ -205,7 +244,7 @@ for totVarsInSample, errMsg in results:
         totNumVariantsInSourceFiles += totVarsInSample
 
 if not errMsg:
-    procResult = subprocess.Popen('zcat {0}/*.vcf.gz | grep -v "^#" | cut -f1,2 | sort | uniq | wc -l'.format(studyFilesInputDir), shell=True,
+    procResult = subprocess.Popen('zcat {0}/*_filtervcf.gz | grep -v "^#" | cut -f1,2 | sort | uniq | wc -l'.format(studyFilesInputDir), shell=True,
             stdout=subprocess.PIPE)
     totNumDistinctVariantsInSourceFiles, errMsg = procResult.communicate()
 

@@ -146,6 +146,7 @@ headerTableName = "headers_{0}".format(studyName.lower())
 sampleInsertLogTableName = "sample_insert_log"
 sampleDefaultsTableName = "sample_defaults_{0}".format(studyName.lower())
 studyInfoTableName = "study_info_{0}".format(studyName.lower())
+uniquePosTableName = "uniq_pos_{0}".format(studyName.lower())
 local_cluster_var = Cluster(cassandraNodeIPs)
 local_session_var = local_cluster_var.connect()
 local_session_var.execute("create table if not exists {0}.{1} (samplename varchar, default_genotype varchar, primary key(samplename));".format(keyspaceName,sampleDefaultsTableName))
@@ -159,7 +160,7 @@ rows = local_session_var.execute("select tot_num_variants from {0}.{1};".format(
 numTotVariants = 0
 if rows:
     rows = iter(rows)
-    numTotVariants = rows.next().distinct_num_variants
+    numTotVariants = rows.next().tot_num_variants
 else:
     raise Exception("Could not obtain number of variants for the study: {0} from the table: {1}.{2}".format(studyName, keyspaceName, studyInfoTableName))
 
@@ -167,9 +168,9 @@ else:
 if not os.path.isfile(variantPositionFileName):
     sql = SQLContext(sc)
     variants = sql.read.format("org.apache.spark.sql.cassandra").\
-                   load(keyspace=keyspaceName, table=variantTableName)
+                   load(keyspace=keyspaceName, table=uniquePosTableName)
     variants.registerTempTable("variantsTable")
-    resultDF = sql.sql("select chrom,start_pos from variantsTable group by 1,2 order by 1,2")
+    resultDF = sql.sql("select chrom,start_pos from variantsTable order by 1,2")
     iterator = resultDF.toLocalIterator()
 
     variantPositionFileHandle = gzip.open(variantPositionFileName, "wb")

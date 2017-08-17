@@ -1,5 +1,18 @@
-# import ftplib
-import os, hashlib, sys, glob, socket, gzip
+# Copyright 2014-2017 EMBL - European Bioinformatics Institute
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#      http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
+import os, hashlib, sys, glob, gzip, SSMergeCommonUtils
 import traceback, subprocess
 
 from cassandra.cluster import Cluster
@@ -7,8 +20,11 @@ from cassandra.query import BatchStatement, BatchType
 from pyspark import SparkConf, SparkContext
 from pyspark.sql import SQLContext
 
-# Implementation of indexOfDifference
 def stringDiffIndex(string1, string2):
+    """
+    Return index of difference between two strings
+    For examples, see https://commons.apache.org/proper/commons-lang/apidocs/org/apache/commons/lang3/StringUtils.html#indexOfDifference-java.lang.CharSequence...-
+    """
     if string1 is None or string2 is None: return -1
     string1Length = len(string1)
     string2Length = len(string2)
@@ -22,163 +38,260 @@ def stringDiffIndex(string1, string2):
     return index
 
 def getNormalizedStartPos(start_pos, ref, alt):
+    """
+    Get a normalized start position for a given variant.
+    This is a verbatim implementation of https://github.com/EBIvariation/eva-pipeline/blob/develop/src/main/java/uk/ac/ebi/eva/pipeline/io/mappers/VariantVcfFactory.java#L190
+    
+    :param start_pos: Variant start position
+    :type start_pos: long
+    :param ref: Variant reference allele
+    :type ref: str
+    :param alt: Variant alternate allele
+    :type alt: str
+    :return: The normalized start position
+    :rtype: long
+    """
     # Remove trailing bases
     refReversed = ref[::-1]
     altReversed = alt[::-1]
     indexOfDifference = stringDiffIndex(refReversed, altReversed)
     ref = refReversed[indexOfDifference:][::-1]
     alt = altReversed[indexOfDifference:][::-1]
-
     # Remove leading bases
     indexOfDifference = stringDiffIndex(ref,alt)
     start = start_pos + indexOfDifference
-    length = max(len(ref), len(alt))
-    end = start_pos + length - 1
     return start
 
 def getSampleName(bcfToolsDir, vcfFileName):
-    sampleNameCmd = subprocess.Popen(
-        "{0}/bin/bcftools query -l {1}".format(bcfToolsDir, vcfFileName), shell=True,
-        stdout=subprocess.PIPE)
+    """
+    Get sample name from a VCF file
+    
+    :param bcfToolsDir: Directory containing the bcftools static binaries
+    :type bcfToolsDir: str
+    :param vcfFileName: Full path to the VCF file
+    :type vcfFileName: str
+    :return: Sample name
+    :rtype: str
+    """
+    sampleNameCmd = subprocess.Popen("{0}/bin/bcftools query -l {1}".format(bcfToolsDir, vcfFileName), shell=True, stdout=subprocess.PIPE)
     sampleName, err = sampleNameCmd.communicate()
     if err: return err
     return sampleName.strip()
 
-def get_ip_address():
-    s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-    s.connect(("8.8.8.8", 80))
-    return s.getsockname()[0]
-
 def writeVariantToCassandra(linesToWrite, sampleName):
-        chunkSize = 1000000
-        batch = BatchStatement(BatchType.UNLOGGED)
-        for line in linesToWrite:
-            lineComps = line.split("\t")
-            chromosome = lineComps[0]
-            position = long(float(lineComps[1]))
-            rsID = lineComps[2].strip()
-            ref = lineComps[3].strip()
-            alt = lineComps[4].strip()
-            qual = lineComps[5].strip()
-            qualFilter = lineComps[6].strip()
-            info = lineComps[7].strip()
-            sampleInfoFormat, sampleInfo = None, None
-            if len(lineComps) > 8:
-                sampleInfoFormat = lineComps[8].strip()
-                sampleInfo = lineComps[9].strip()
-            chunk = int(position/chunkSize)
+    """
+    Write a set of variant lines to Cassandra
+    
+    :param linesToWrite: Set of variant lines to write from a given sample
+    :type linesToWrite: list[str]
+    :param sampleName: Name of the sample that houses the variant lines
+    :type sampleName: str
+    :return: None
+    """
+    batch = BatchStatement(BatchType.UNLOGGED)
 
-            for altAllele in alt.split(","):
-                start_pos = getNormalizedStartPos(position, ref, altAllele)
-                batch.add(uniquePosInsertStmt.bind([chromosome, chunk, start_pos]))
+    for line in linesToWrite:
+        lineComps = [x.strip() for x in line.split("\t")]
+        chromosome, position, rsID, ref, alt, qual, qualFilter, info = lineComps[:8]
+        sampleInfoFormat, sampleInfo = None, None
+        if len(lineComps) > 8: sampleInfoFormat, sampleInfo = lineComps[8:]
 
-            variantID = chromosome + "_" + str(position).zfill(12) + "_" + hashlib.md5(ref + "_" + alt).hexdigest() + sampleName.zfill(12)
-            boundStmt = variantInsertStmt.bind([chromosome, chunk, position, ref, alt, qual, qualFilter, info, sampleInfoFormat, sampleInfo, rsID, variantID, sampleName])
-            batch.add(boundStmt)
-        session.execute(batch, timeout = 1200)
+        # Chromosome + Chunk combination determines which node a variant is written to
+        position = long(float(position))
+        chunk = int(position/SSMergeCommonUtils.CHR_POS_CHUNKSIZE)
 
+        # Insert the chromosome position that was scanned
+        batch.add(uniquePosInsertStmt.bind([chromosome, chunk, position]))
+        # Also, insert the normalized chromosome positions for each alternate allele
+        for altAllele in alt.split(","):
+            revised_start_pos = getNormalizedStartPos(position, ref, altAllele)
+            if revised_start_pos != position: batch.add(uniquePosInsertStmt.bind([chromosome, chunk, revised_start_pos]))
+
+        # Unique Variant ID is chromosome_12-digit zero padded start_MD5(REF_ALT)_20-character samplename
+        variantID = chromosome + "_" + str(position).zfill(12) + "_" + hashlib.md5(ref + "_" + alt).hexdigest() + "_" + sampleName.zfill(20)
+        # Insert the variant information
+        boundStmt = variantInsertStmt.bind([chromosome, chunk, position, ref, alt, qual, qualFilter, info, sampleInfoFormat, sampleInfo, rsID, variantID, sampleName])
+        batch.add(boundStmt)
+
+    # Batch execute the insert statements added in the loop above
+    cassandraSession.execute(batch, timeout = 1200)
 
 def writeHeaderToCassandra(headerLines, sampleName):
-    session.execute(headerInsertStmt.bind([sampleName, headerLines]), timeout=1200)
+    """
+    Write a set of header lines to Cassandra
 
+    :param headerLines: Set of header lines to write from a given sample
+    :type headerLines: str
+    :param sampleName: Name of the sample that houses the header lines
+    :type sampleName: str
+    :return: None
+    """
+    cassandraSession.execute(headerInsertStmt.bind([sampleName, headerLines]), timeout=1200)
 
 def cassandraInsert(vcfFileName):
+    """
+    Insert the contents of a VCF file: variants and headers into relevant Cassandra tables 
+    
+    :param vcfFileName: Full path to the VCF file
+    :return: Total number of variants that were scanned from the VCF file
+    :rtype: long
+    """
+    lineBatchSize = 50 # Write variants in batches
     totVarsInSample = 0
-    vcfFileHandle = gzip.open(vcfFileName, 'rb')
-    headerLines = ""
-    sampleName = ""
-    lineBatchSize = 50
+    headerLines, sampleName = "", ""
     linesToWrite = []
-    for line in vcfFileHandle:
-        line = line.strip()
-        if line.startswith("#"):
-            headerLines += (line + os.linesep)
-            if (line.startswith("#CHROM")):
-                sampleName = line.split("\t")[-1]
-                writeHeaderToCassandra(headerLines.strip(), sampleName)
-                break
-    lineBatchIndex = 0
-    for line in vcfFileHandle:
-        totVarsInSample += 1
-        line = line.strip()
-        linesToWrite.append(line)
-        lineBatchIndex += 1
-        if lineBatchIndex == lineBatchSize:
+
+    with gzip.open(vcfFileName, 'rb') as vcfFileHandle:
+        for line in vcfFileHandle:
+            line = line.strip()
+            if line.startswith("#"):
+                headerLines += (line + os.linesep)
+                if (line.startswith("#CHROM")):
+                    sampleName = line.split("\t")[-1]
+                    writeHeaderToCassandra(headerLines.strip(), sampleName)
+                    break
+        lineBatchIndex = 0
+        for line in vcfFileHandle:
+            totVarsInSample += 1
+            line = line.strip()
+            linesToWrite.append(line)
+            lineBatchIndex += 1
+            if lineBatchIndex == lineBatchSize:
+                writeVariantToCassandra(linesToWrite, sampleName)
+                lineBatchIndex = 0
+                linesToWrite = []
+        if linesToWrite:
             writeVariantToCassandra(linesToWrite, sampleName)
-            lineBatchIndex = 0
-            linesToWrite = []
-    if linesToWrite:
-        writeVariantToCassandra(linesToWrite, sampleName)
-    vcfFileHandle.close()
-    return totVarsInSample
 
-
-def getErrFileContents(errFileName):
-    errFileContents = None
-    with open(errFileName, "r") as errFileHandle:
-        errFileContents = errFileHandle.readlines()
-    if errFileContents: return errFileContents
-    return None
+        return totVarsInSample
 
 def getSampleProcessedStatus(keyspaceName, sampleInsertLogTableName, studyName, sampleName):
-    allrows = session.execute("select insert_flag from {0}.{1} where studyname = '{2}' and samplename = '{3}';".format(keyspaceName, sampleInsertLogTableName, studyName, sampleName))
+    """
+    Check if the variants from a specific sample have already been inserted into the requisite Cassandra tables
+    
+    :param keyspaceName: Cassandra keyspace
+    :param sampleInsertLogTableName: Cassandra Sample Insert log table name
+    :param studyName: Name of the study
+    :param sampleName: Name of the sample
+    :return: True if variants were inserted for the given sample, False otherwise
+    :rtype: bool
+    """
+    allrows = cassandraSession.execute("select proc_status from {0}.{1} where studyname = '{2}' and samplename = '{3}';"
+                              .format(keyspaceName, sampleInsertLogTableName, studyName, sampleName))
     if allrows:
         allrows = iter(allrows)
         firstRow = allrows.next()
     else:
         return False
-    if firstRow.insert_flag == 1: return True
-    return True
+    if firstRow.proc_status: return firstRow.proc_status
+    return ""
 
-def processStudyFiles(studyName, studyFileName, cassandraNodeIPs, keyspaceName, headerTableName, variantTableName, sampleInsertLogTableName, uniquePosTableName, bcfToolsDir):
 
+def getTotDistinctVarPosFromSampleFiles(vcfInputDirectory):
+    """
+    Get the total number of distinct variant positions from all the VCF files across all the samples
+    
+    :param vcfInputDirectory: Full path to the VCF directory
+    :return: Total number of distinct variants
+    :rtype: long
+    """
+    procResult = subprocess.Popen(
+        'zcat {0}/*_filtervcf.gz | grep -v "^#" | cut -f1,2 | sort | uniq | wc -l'.format(vcfInputDirectory),
+        shell=True,
+        stdout=subprocess.PIPE)
+    totNumDistinctVarPos, errMsg = procResult.communicate()
+    if errMsg: raise Exception("Could not get distinct number of variants due to error:{0}".format(errMsg))
+    else: return long(float(totNumDistinctVarPos))
+
+def update_processing_status(keyspaceName, sampleInsertLogTableName, sampleName,
+                             session, studyName, totVarsInSample, proc_status):
+    cassandraSession.execute(
+        "insert into {0}.{1} (studyname, samplename, proc_status, num_variants) values ('{2}', '{3}', '{4}', {5})".format(
+            keyspaceName, sampleInsertLogTableName, studyName, sampleName, proc_status, totVarsInSample))
+
+
+def processStudyFiles(studyName, studyFileName, cassandraNodeIPs, keyspaceName, headerTableName, variantTableName,
+                      sampleInsertLogTableName, uniquePosTableName, bcfToolsDir):
+    """
+    Process a study file (runs on each core on each Apache Spark node)
+    
+    :param studyName: Name of the study (ex: PRJEB21300) 
+    :param studyFileName: Full path to the study file (ex: /mnt/shared_storage/PRJEB21300/StudySample1.vcf.gz)
+    :param cassandraNodeIPs: Set of "seed" IPs of Cassandra nodes to initialize connection 
+    :param keyspaceName: Cassandra key space (roughly analogous to a database) where the variant information should be written to 
+    :param headerTableName: Name of the Cassandra table that stores variant header information
+    :param variantTableName: Name of the Cassandra table that stores variant information 
+    :param sampleInsertLogTableName: Name of the Cassandra table that stores the status of variant insertion from a sample
+    :param uniquePosTableName: Name of the Cassandra table that stores unique chromosome + start_pos information
+    :param bcfToolsDir: Directory containing the bcftools static binaries (ex: /mnt/shared_storage/bcftools)
+    :return: Tuple - (Total number of variants scanned, Error message if any) 
+    """
+    global cassandraCluster, cassandraSession, variantInsertStmt, headerInsertStmt, uniquePosInsertStmt
+    samplePrefix, errFileContents, returnErrMsg, cassandraCluster, cassandraSession = None, None, None, None, None
     totVarsInSample = 0
-    filterCommandResult = -1
-    global cluster, session, variantInsertStmt, headerInsertStmt, uniquePosInsertStmt
-    samplePrefix, errFileContents, returnErrMsg, cluster, session = None, None, None, None, None
-    cluster = Cluster(cassandraNodeIPs)
-    session = cluster.connect(keyspaceName)
+
+    cassandraCluster = Cluster(cassandraNodeIPs)
+    cassandraSession = cassandraCluster.connect(keyspaceName)
 
     sampleName = getSampleName(bcfToolsDir, studyFileName)
-    isSampleProcessed = getSampleProcessedStatus(keyspaceName, sampleInsertLogTableName, studyName, sampleName)
-    if isSampleProcessed: return (-1, "Already processed sample: {0} for study: {1}".format(sampleName, studyName))
+
+    sample_proc_status = getSampleProcessedStatus(keyspaceName, sampleInsertLogTableName, studyName, sampleName)
+    if sample_proc_status == "variants_inserted": return (-1,"Already processed sample: {0} for study: {1}"
+                                                          .format(sampleName, studyName))
 
     try:
-        variantInsertStmt = session.prepare(
-            "insert into {0}.{1} (chrom,chunk,start_pos,ref,alt,qual,filter,info,sampleinfoformat,sampleinfo,var_id,var_uniq_id,sampleName) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)".format(keyspaceName, variantTableName))
-        headerInsertStmt = session.prepare("INSERT INTO {0}.{1} (samplename, header) VALUES (?,?)".format(keyspaceName,headerTableName))
-        uniquePosInsertStmt = session.prepare("INSERT INTO {0}.{1} (chrom, chunk, start_pos) VALUES (?,?,?)".format(keyspaceName,uniquePosTableName))
+        # Prepared statements to insert into variants, headers and unique positions tables in Cassandra
+        variantInsertStmt = cassandraSession.prepare(
+            "insert into {0}.{1} "
+            "(chrom,chunk,start_pos,ref,alt,qual,filter,info,sampleinfoformat,sampleinfo,var_id,var_uniq_id,sampleName) "
+            "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)".format(keyspaceName, variantTableName))
+        headerInsertStmt = cassandraSession.prepare("insert into {0}.{1} (samplename, header) VALUES (?,?)"
+                                                    .format(keyspaceName,headerTableName))
+        uniquePosInsertStmt = cassandraSession.prepare("insert into {0}.{1} (chrom, chunk, start_pos) VALUES (?,?,?)"
+                                                       .format(keyspaceName,uniquePosTableName))
 
+        # Get the sample prefix and the base directory of the file that we are operating on
         samplePrefix = os.path.basename(studyFileName).split(".")[0]
         baseDir = os.path.dirname(studyFileName)
-        filteredFileName = "{0}_filtervcf.gz".format(samplePrefix)
         os.chdir(baseDir)
 
-        if not os.path.isfile(baseDir + os.path.sep + filteredFileName):
-            os.system("""{0}/bin/bcftools filter -e ALT=\\'.\\' -o {2}_filtervcf.gz -O z {1} 2> {2}_filtering_err.txt""".format(bcfToolsDir,studyFileName, samplePrefix))
-            errFileContents = getErrFileContents("{0}_filtering_err.txt".format(samplePrefix))
-            if errFileContents: filterCommandResult = -1
-            else: filterCommandResult = 0
+        # region Run bcftools filter command to filter out monomorphic references
+        if sample_proc_status != "variants_filtered":
+            os.system("""({0}/bin/bcftools filter -e ALT=\\'.\\' {1} | gzip) 1>{2}_filtervcf.gz 2>{2}_filtering_err.txt"""
+                      .format(bcfToolsDir,studyFileName, samplePrefix))
+            errFileContents = SSMergeCommonUtils.getErrFileContents("{0}_filtering_err.txt".format(samplePrefix))
+            if errFileContents:
+                filterCommandResult = -1
+            else:
+                filterCommandResult = 0
+                update_processing_status(keyspaceName, sampleInsertLogTableName, sampleName, cassandraSession, studyName,
+                                         0, "variants_filtered")
         else:
             filterCommandResult = 0
+        # endregion
 
+        # region Insert the variants into Cassandra from the filtered VCF files obtained from above
         if filterCommandResult != 0:
              returnErrMsg = "Failed to process {0} due to error: {1}".format(studyFileName, errFileContents)
         else:
             totVarsInSample = cassandraInsert(baseDir + os.path.sep + "{0}_filtervcf.gz".format(samplePrefix))
             os.system("echo {0} > {1}_filtered_variant_count.txt".format(str(totVarsInSample), samplePrefix))
+        # endregion
 
+        # region Update status to indicate that all variants have been inserted into Cassandra
         if not returnErrMsg and totVarsInSample != 0:
-            session.execute(
-                "insert into {0}.{1} (studyname, samplename, insert_flag, num_variants) values ('{2}', '{3}', {4}, {5})".format(
-                    keyspaceName, sampleInsertLogTableName, studyName, sampleName, 1, totVarsInSample))
+            update_processing_status(keyspaceName, sampleInsertLogTableName, sampleName, cassandraSession, studyName,
+                                     totVarsInSample, "variants_inserted")
+        # endregion
+
     except Exception, ex:
-        returnErrMsg = "Error in processing file:{0}".format(studyFileName) + os.linesep + traceback.format_exc()
+        returnErrMsg = "Error in processing file:{0}".format(studyFileName) + os.linesep + ex.message \
+                       + os.linesep + traceback.format_exc()
     finally:
-        if cluster != None and session != None:
+        if cassandraCluster != None and cassandraSession != None:
             try:
-                session.shutdown()
-                cluster.shutdown()
+                cassandraSession.shutdown()
+                cassandraCluster.shutdown()
             except Exception, e:
                 pass
         if returnErrMsg: return (-1, returnErrMsg)
@@ -186,70 +299,85 @@ def processStudyFiles(studyName, studyFileName, cassandraNodeIPs, keyspaceName, 
 
 
 
-# studyFilesDir = "/pub/databases/eva/PRJEB13618/submitted_files"
-# ftpSite = "ftp.ebi.ac.uk"
-# ftpUserName = "anonymous"
-# ftp = ftplib.FTP(ftpSite, ftpUserName)
-# ftp.cwd(studyFilesDir)
-if len(sys.argv) != 6:
-    print("Usage: SingleSampleMerge.py <Study PRJ ID> <Full Path to study files> <Cassandra node IP1> <Cassandra node IP2> <BCF Tools Directory>")
-    sys.exit(1)
+if __name__ == '__main__':
+    if len(sys.argv) != 6:
+        print("Usage: SingleSampleMerge.py <Study PRJ ID> <Full Path to study files> "
+              "<Cassandra node IP1> <Cassandra node IP2> <BCF Tools Directory>")
+        sys.exit(1)
 
-# Parse arguments
-studyName = sys.argv[1]
-studyFilesInputDir = sys.argv[2]
-cassandraNodeIPs = [sys.argv[3], sys.argv[4]]
-bcfToolsDir = sys.argv[5]
+    # region Parse arguments
+    studyName = sys.argv[1]
+    studyFilesInputDir = sys.argv[2]
+    cassandraNodeIPs = [sys.argv[3], sys.argv[4]]
+    bcfToolsDir = sys.argv[5]
+    # endregion
 
-# Get the list of study files
-os.chdir(studyFilesInputDir)
-dirContents = glob.glob("*.vcf.gz")
-dirContents.sort()
-studyFileNames = dirContents
+    # region Get the list of study files
+    os.chdir(studyFilesInputDir)
+    dirContents = glob.glob("*.vcf.gz")
+    dirContents.sort()
+    studyFileNames = dirContents
+    # endregion
 
-# Create keyspace, variant, header and sample insertlog tables in Cassandra
-keyspaceName = "variant_ksp"
-variantTableName = "variants_{0}".format(studyName.lower())
-headerTableName = "headers_{0}".format(studyName.lower())
-sampleInsertLogTableName = "sample_insert_log"
-studyInfoTableName = "study_info_{0}".format(studyName.lower())
-uniquePosTableName = "uniq_pos_{0}".format(studyName.lower())
-local_cluster_var = Cluster(cassandraNodeIPs)
-local_session_var = local_cluster_var.connect()
-local_session_var.execute("create keyspace if not exists {0}".format(keyspaceName)  + " with replication = {'class': 'SimpleStrategy', 'replication_factor' : 1};")
-local_session_var.execute("create table if not exists {0}.{1} (samplename varchar, header varchar, primary key(samplename));".format(keyspaceName,headerTableName))
-local_session_var.execute("create table if not exists {0}.{1} (chrom varchar, chunk int, start_pos bigint, ref varchar, alt varchar, qual varchar, filter varchar, info varchar, sampleinfoformat varchar, sampleinfo  varchar, var_id varchar, var_uniq_id varchar, sampleName varchar,  primary key((chrom, chunk), start_pos, ref, alt, samplename));".format(keyspaceName,variantTableName))
-local_session_var.execute("create table if not exists {0}.{1} (studyname varchar, samplename varchar, insert_flag int, num_variants bigint, primary key((studyname, samplename)));".format(keyspaceName,sampleInsertLogTableName))
-local_session_var.execute("create table if not exists {0}.{1} (studyname varchar, tot_num_variants bigint, distinct_num_variants bigint, primary key(studyname));".format(keyspaceName,studyInfoTableName))
-local_session_var.execute("create table if not exists {0}.{1} (chrom varchar, chunk int, start_pos bigint, primary key((chrom,chunk), start_pos));".format(keyspaceName,uniquePosTableName))
+    # region Create keyspace and the required tables for variants, headers, sample insertion log, study info and
+    # unique chromosome position tables in Cassandra
+    keyspaceName = "variant_ksp"
+    variantTableName = "variants_{0}".format(studyName.lower())
+    headerTableName = "headers_{0}".format(studyName.lower())
+    sampleInsertLogTableName = "sample_insert_log"
+    studyInfoTableName = "study_info_{0}".format(studyName.lower())
+    uniquePosTableName = "uniq_pos_{0}".format(studyName.lower())
+    local_cluster_var = Cluster(cassandraNodeIPs)
+    local_session_var = local_cluster_var.connect()
+    local_session_var.execute("create keyspace if not exists {0}".format(keyspaceName)  +
+                              " with replication = {'class': 'SimpleStrategy', 'replication_factor' : 1};")
+    local_session_var.execute("create table if not exists {0}.{1} "
+                              "(samplename varchar, header varchar, "
+                              "primary key(samplename));"
+                              .format(keyspaceName,headerTableName))
+    local_session_var.execute("create table if not exists {0}.{1} "
+                              "(chrom varchar, chunk int, start_pos bigint, ref varchar, alt varchar, qual varchar, "
+                              "filter varchar, info varchar, sampleinfoformat varchar, "
+                              "sampleinfo  varchar, var_id varchar, var_uniq_id varchar, sampleName varchar,  "
+                              "primary key((chrom, chunk), start_pos, ref, alt, samplename));"
+                              .format(keyspaceName,variantTableName))
+    local_session_var.execute("create table if not exists {0}.{1} "
+                              "(studyname varchar, samplename varchar, proc_status varchar, num_variants bigint, "
+                              "primary key((studyname, samplename)));"
+                              .format(keyspaceName,sampleInsertLogTableName))
+    local_session_var.execute("create table if not exists {0}.{1} "
+                              "(studyname varchar, tot_num_variants bigint, distinct_num_variant_pos bigint, "
+                              "primary key(studyname));"
+                              .format(keyspaceName,studyInfoTableName))
+    local_session_var.execute("create table if not exists {0}.{1} "
+                              "(chrom varchar, chunk int, start_pos bigint, "
+                              "primary key((chrom,chunk), start_pos));"
+                              .format(keyspaceName,uniquePosTableName))
+    # endregion
 
-# Process study files in parallel
-conf = SparkConf().setMaster("spark://{0}:7077".format(get_ip_address())).setAppName("SingleSampleVCFMerge").set("spark.cassandra.connection.host", cassandraNodeIPs[0]).set("spark.cassandra.read.timeout_ms", 1200000).set("spark.cassandra.connection.timeout_ms", 1200000)
-sc = SparkContext(conf=conf)
-sc.setLogLevel("INFO")
-numPartitions = len(studyFileNames)
-studyIndivRDD = sc.parallelize(studyFileNames, numPartitions)
-results = studyIndivRDD.map(lambda entry: processStudyFiles(studyName, studyFilesInputDir + os.path.sep + entry, cassandraNodeIPs, keyspaceName, headerTableName, variantTableName, sampleInsertLogTableName, uniquePosTableName, bcfToolsDir)).collect()
+    # region Process study files in parallel
+    conf = SparkConf().setMaster("spark://{0}:7077".format(SSMergeCommonUtils.get_ip_address())).setAppName("SingleSampleVCFMerge").set("spark.cassandra.connection.host", cassandraNodeIPs[0]).set("spark.cassandra.read.timeout_ms", 1200000).set("spark.cassandra.connection.timeout_ms", 1200000)
+    sc = SparkContext(conf=conf)
+    sc.setLogLevel("INFO")
+    numPartitions = len(studyFileNames)
+    studyIndivRDD = sc.parallelize(studyFileNames, numPartitions)
+    results = studyIndivRDD.map(lambda entry: processStudyFiles(studyName, studyFilesInputDir + os.path.sep + entry, cassandraNodeIPs, keyspaceName, headerTableName, variantTableName, sampleInsertLogTableName, uniquePosTableName, bcfToolsDir)).collect()
+    # endregion
 
 
-# region Validate Cassandra record counts against record counts in the source file
-totNumVariantsInSourceFiles = 0
-totNumVariantsInserted = 0
+    # region Validate Cassandra record counts against record counts in the source file
+    atleastOneError = False
+    totVarsInSampleFiles = 0
 
-errMsg = None
-for totVarsInSample, errMsg in results:
-    if errMsg:
-        print(errMsg)
-    else:
-        totNumVariantsInSourceFiles += totVarsInSample
+    for (totVarsInSample, errMsg) in results:
+        if errMsg:
+            print(errMsg)
+            atleastOneError = True
+        else:
+            totVarsInSampleFiles += totVarsInSample
 
-if not errMsg:
-    procResult = subprocess.Popen('zcat {0}/*_filtervcf.gz | grep -v "^#" | cut -f1,2 | sort | uniq | wc -l'.format(studyFilesInputDir), shell=True,
-            stdout=subprocess.PIPE)
-    totNumDistinctVariantsInSourceFiles, errMsg = procResult.communicate()
-
-    if errMsg: print("Error retrieving unique set of variants from source files: {0}".format(errMsg))
-    else:
+    totDistinctVarPosInSampleFiles = getTotDistinctVarPosFromSampleFiles(studyFilesInputDir)
+    if not atleastOneError:
         # Count the number of variants from the variants table
         sql = SQLContext(sc)
         variants = sql.read.format("org.apache.spark.sql.cassandra"). \
@@ -259,18 +387,23 @@ if not errMsg:
         totNumVariantsInserted = resultDF.count()
         resultDF = sql.sql("select chrom,start_pos from variantsTable group by 1,2")
         totNumDistinctVariantsInserted = resultDF.count()
-        local_session_var.execute("insert into {0}.{1} (studyname, tot_num_variants, distinct_num_variants) values ('{2}',{3}, {4})".format(keyspaceName, studyInfoTableName, studyName, totNumVariantsInserted, totNumDistinctVariantsInserted))
+
+        # Register counts of
+        local_session_var.execute("insert into {0}.{1} (studyname, tot_num_variants, distinct_num_variant_pos) "
+                                  "values ('{2}',{3}, {4})"
+                                  .format(keyspaceName, studyInfoTableName, studyName, totNumVariantsInserted,
+                                          totNumDistinctVariantsInserted))
 
         print("******************************************************************************************************")
-        print("Number of variants as counted from source files: {0}".format(str(totNumVariantsInSourceFiles)))
-        print("Number of distinct variants as counted from source files: {0}".format(str(totNumDistinctVariantsInSourceFiles)))
+        print("Number of variants as counted from source files: {0}".format(str(totVarsInSampleFiles)))
+        print("Number of distinct variant positions as counted from source files: {0}".format(str(totDistinctVarPosInSampleFiles)))
 
         print("Number of variant inserts recorded as retrieved from Cassandra: {0}".format(str(totNumVariantsInserted)))
-        print("Number of distinct variant inserts as retrieved from Cassandra: {0}".format(str(totNumDistinctVariantsInserted)))
+        print("Number of distinct variant positions as retrieved from Cassandra: {0}".format(str(totNumDistinctVariantsInserted)))
         print("******************************************************************************************************")
     # endregion
 
-local_session_var.shutdown()
-local_cluster_var.shutdown()
+    local_session_var.shutdown()
+    local_cluster_var.shutdown()
 
-sc.stop()
+    sc.stop()

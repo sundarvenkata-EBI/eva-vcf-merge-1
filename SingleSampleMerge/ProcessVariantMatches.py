@@ -40,7 +40,7 @@ def getVariantInfo(matchLine):
     chunk = int(varPosMatch / SSMergeCommonUtils.CHR_POS_CHUNKSIZE)
     return chromMatch, varPosMatch, ref, alt, genotype, formatMatch, sampleinfoMatch, chunk
 
-def processVariantMatchFile(universalVarListFileName, matchOutputFileName, sampleName, defaultGenotype):
+def processVariantMatchFile(universalVarListFileName, matchOutputFileName, sampleName, defaultGenotype, missingGenotype):
     """
     Process a variant match file that is generated for every sample. The variant match file contains only entries 
     at the variant positions (determined from the first pass. see SingleSampleMerge.py) for a given sample .
@@ -54,7 +54,9 @@ def processVariantMatchFile(universalVarListFileName, matchOutputFileName, sampl
     :param sampleName: Sample Name
     :type sampleName: str
     :param defaultGenotype: Default genotype assumed for the sample
-    :type defaultGenotype: str    
+    :type defaultGenotype: str
+    :param missingGenotype: Default genotype assumed for the sample
+    :type missingGenotype: str
     """
     # Insert default genotype assumed for the sample into Cassandra
     insertDefaultGenotypeToCassandra(sampleName, defaultGenotype)
@@ -95,7 +97,7 @@ def processVariantMatchFile(universalVarListFileName, matchOutputFileName, sampl
                     else:
                         if defaultGenotype != "./." and defaultGenotype != ".|.":
                             cassandraSession.execute(variantInsertPrepStmt.bind(
-                                [chromToFind, chunk, varPosToFind, ref, alt, sampleName, "GT", "./."]))
+                                [chromToFind, chunk, varPosToFind, ref, alt, sampleName, "GT", missingGenotype]))
 
 
 def getNumMatchedVariants(keyspaceName, sampleInsertLogTableName, studyName, sampleName):
@@ -122,7 +124,42 @@ def getNumMatchedVariants(keyspaceName, sampleInsertLogTableName, studyName, sam
         raise Exception("Could not find number of matched variants for the sample: {0}".format(sampleName))
 
 
-def matchVariantPosInStudyFiles(bcfToolsDir, studyName, defaultGenotype, altGenotype, studyFileName, numTotVariants, studyFilesInputDir, variantPositionFileName, cassandraNodeIPs, keyspaceName, sampleDefaultsTableName, variantTableName, sampleInsertLogTableName):
+def matchVariantPosInStudyFiles(bcfToolsDir, studyName, studyFileName, studyFilesInputDir, variantPositionFileName,
+                                numTotVariants, defaultGenotype, missingGenotype, cassandraNodeIPs, keyspaceName,
+                                sampleDefaultsTableName, variantTableName, sampleInsertLogTableName):
+    """
+    Match the universal set of unique variant positions from across all samples 
+    (obtained from first pass, see SingleSampleMerge.py)
+    
+    :param bcfToolsDir: Directory containing the bcftools static binaries
+    :type bcfToolsDir: str
+    :param studyName: Study Name
+    :type studyName: str
+    :param studyFileName: File Name for the specific sample being matched for variant positions
+    :type studyFileName: str
+    :param studyFilesInputDir: Input directory where the single sample files reside
+    :type studyFilesInputDir: str
+    :param variantPositionFileName: Full path to file that has all the unique variant positions obtained form first pass
+    :type variantPositionFileName: str
+    :param numTotVariants: Total number of variants that were inserted into Cassandra during the first pass
+    :type numTotVariants: long
+    :param defaultGenotype: Default genotype to use for the sample
+    :type defaultGenotype: str
+    :param missingGenotype: Missing genotype to use for the sample
+    :type missingGenotype: str
+    :param cassandraNodeIPs: Set of IP addresses to connect to the Cassandra cluster
+    :type cassandraNodeIPs: list[str]
+    :param keyspaceName: Cassandra key space where the variant table resides
+    :type keyspaceName: str
+    :param sampleDefaultsTableName: Name of the Cassandra table that has the default genotypes per sample
+    :type sampleDefaultsTableName: str
+    :param variantTableName: Cassandra variant table
+    :type variantTableName: str
+    :param sampleInsertLogTableName: Cassandra sample insert log table to determine the number of variants in the sample
+    :type sampleInsertLogTableName: str
+    :return: Error messages, if any, during the function execution. None otherwise.
+    :rtype: str
+    """
     global cassandraCluster, cassandraSession, defaultGenotypeInsertPrepStmt, variantInsertPrepStmt
     cassandraCluster = Cluster(cassandraNodeIPs)
     cassandraSession = cassandraCluster.connect(keyspaceName)
@@ -144,16 +181,16 @@ def matchVariantPosInStudyFiles(bcfToolsDir, studyName, defaultGenotype, altGeno
         errFileName = sampleName + "_variantmatch.err"
         bcfVariantMatchCmd = "({0}/bin/bcftools query -f'%CHROM\\t%POS\\t%REF\\t%ALT[\\t%GT]\\t%LINE' -T {1} {3} | cut -f1,2,3,4,5,14,15 | gzip) 1> {2} 2> {4}".format(bcfToolsDir, variantPositionFileName, matchOutputFileName, chosenFileToProcess, errFileName)
 
-        result = os.system(bcfVariantMatchCmd)
+        os.system(bcfVariantMatchCmd)
         errFileHandle = open(errFileName, "r")
         errlines = errFileHandle.readlines()
         errFileHandle.close()
         if not errlines:
             numMatchedVariants = getNumMatchedVariants(keyspaceName, sampleInsertLogTableName, studyName, sampleName)
             if (numTotVariants*1.0/numMatchedVariants) > 2:
-                processVariantMatchFile(variantPositionFileName, matchOutputFileName, sampleName, altGenotype)
+                processVariantMatchFile(variantPositionFileName, matchOutputFileName, sampleName, missingGenotype,missingGenotype)
             else:
-                processVariantMatchFile(variantPositionFileName, matchOutputFileName, sampleName, defaultGenotype)
+                processVariantMatchFile(variantPositionFileName, matchOutputFileName, sampleName, defaultGenotype, missingGenotype)
         else:
             returnErrMsg = "Error in processing file:{0}".format(chosenFileToProcess) + os.linesep + os.linesep.join(errlines)
     except Exception, e:
@@ -164,52 +201,60 @@ def matchVariantPosInStudyFiles(bcfToolsDir, studyName, defaultGenotype, altGeno
         if returnErrMsg: return returnErrMsg
         return None
 
+if __name__ == "__main__":
 
-if len(sys.argv) != 8:
-    print("Usage: ProcessVariantMatches.py <Study PRJ ID> <Default Genotype> <Alternate Genotype> <Full Path to study files> <Cassandra node IP1> <Cassandra node IP2> <BCF Tools Directory>")
-    sys.exit(1)
+    if len(sys.argv) != 8:
+        print("Usage: ProcessVariantMatches.py <Study PRJ ID> <Default Genotype> <Missing Genotype> <Full Path to study files> <Cassandra node IP1> <Cassandra node IP2> <BCF Tools Directory>")
+        sys.exit(1)
 
-# Parse arguments
-studyName = sys.argv[1]
-defaultGenotype = sys.argv[2]
-altGenotype = sys.argv[3]
-studyFilesInputDir = sys.argv[4]
-cassandraNodeIPs = [sys.argv[5], sys.argv[6]]
-bcfToolsDir = sys.argv[7]
+    # region Parse arguments
+    studyName = sys.argv[1]
+    defaultGenotype = sys.argv[2]
+    missingGenotype = sys.argv[3]
+    studyFilesInputDir = sys.argv[4]
+    cassandraNodeIPs = [sys.argv[5], sys.argv[6]]
+    bcfToolsDir = sys.argv[7]
+    # endregion
 
-# Get the list of study files
-os.chdir(studyFilesInputDir)
-dirContents = glob.glob("*_filtervcf.gz")
-dirContents.sort()
-studyFileNames = dirContents
+    # region Get the list of study files
+    os.chdir(studyFilesInputDir)
+    dirContents = glob.glob("*_filtervcf.gz")
+    dirContents.sort()
+    studyFileNames = dirContents
+    # endregion
 
-# Initialize variant, header, sample insert log and study table names in Cassandra
-keyspaceName = "variant_ksp"
-variantTableName = "variants_{0}".format(studyName.lower())
-sampleInsertLogTableName = "sample_insert_log"
-sampleDefaultsTableName = "sample_defaults_{0}".format(studyName.lower())
-studyInfoTableName = "study_info_{0}".format(studyName.lower())
-uniquePosTableName = "uniq_pos_{0}".format(studyName.lower())
-local_cluster_var = Cluster(cassandraNodeIPs)
-local_session_var = local_cluster_var.connect()
-local_session_var.execute("create table if not exists {0}.{1} (samplename varchar, default_genotype varchar, primary key(samplename));"
-                          .format(keyspaceName,sampleDefaultsTableName))
+    # region Initialize variant, header, sample insert log and study table names in Cassandra
+    keyspaceName = "variant_ksp"
+    variantTableName = "variants_{0}".format(studyName.lower())
+    sampleInsertLogTableName = "sample_insert_log"
+    sampleDefaultsTableName = "sample_defaults_{0}".format(studyName.lower())
+    studyInfoTableName = "study_info_{0}".format(studyName.lower())
+    uniquePosTableName = "uniq_pos_{0}".format(studyName.lower())
+    local_cluster_var = Cluster(cassandraNodeIPs)
+    local_session_var = local_cluster_var.connect()
+    local_session_var.execute("create table if not exists {0}.{1} (samplename varchar, default_genotype varchar, primary key(samplename));"
+                              .format(keyspaceName,sampleDefaultsTableName))
+    # endregion
 
-conf = SparkConf().setMaster("spark://{0}:7077".format(SSMergeCommonUtils.get_ip_address())).setAppName("SingleSampleVCFMerge").set("spark.cassandra.connection.host", cassandraNodeIPs[0]).set("spark.scheduler.listenerbus.eventqueue.size", "100000").set("spark.cassandra.read.timeout_ms", 1200000).set("spark.cassandra.connection.timeout_ms", 1200000)
-sc = SparkContext(conf=conf)
-sc.setLogLevel("INFO")
+    # region Initialize Apache Spark
+    conf = SparkConf().setMaster("spark://{0}:7077".format(SSMergeCommonUtils.get_ip_address())).setAppName("SingleSampleVCFMerge").set("spark.cassandra.connection.host", cassandraNodeIPs[0]).set("spark.scheduler.listenerbus.eventqueue.size", "100000").set("spark.cassandra.read.timeout_ms", 1200000).set("spark.cassandra.connection.timeout_ms", 1200000)
+    sc = SparkContext(conf=conf)
+    sc.setLogLevel("INFO")
+    # endregion
 
-variantPositionFileName = studyFilesInputDir + os.path.sep + "unique_variant_positions.gz"
-rows = local_session_var.execute("select tot_num_variants from {0}.{1};".format(keyspaceName, studyInfoTableName))
-numTotVariants = 0
-if rows:
-    rows = iter(rows)
-    numTotVariants = rows.next().tot_num_variants
-else:
-    raise Exception("Could not obtain number of variants for the study: {0} from the table: {1}.{2}".format(studyName, keyspaceName, studyInfoTableName))
+    # region Obtain the total number of variants from across the samples as determined from the first pass
+    variantPositionFileName = studyFilesInputDir + os.path.sep + "unique_variant_positions.gz"
+    rows = local_session_var.execute("select tot_num_variants from {0}.{1};".format(keyspaceName, studyInfoTableName))
+    numTotVariants = 0
+    if rows:
+        rows = iter(rows)
+        numTotVariants = rows.next().tot_num_variants
+    else:
+        raise Exception("Could not obtain number of variants for the study: {0} from the table: {1}.{2}"
+                        .format(studyName, keyspaceName, studyInfoTableName))
+    # endregion
 
-
-if not os.path.isfile(variantPositionFileName):
+    # region Generate a position file with the unique set of variant positions determined from the first pass
     sql = SQLContext(sc)
     variants = sql.read.format("org.apache.spark.sql.cassandra").\
                    load(keyspace=keyspaceName, table=uniquePosTableName)
@@ -221,14 +266,31 @@ if not os.path.isfile(variantPositionFileName):
     for result in iterator:
         discardOutput = variantPositionFileHandle.write(result["chrom"] + "\t" + str(result["start_pos"]) + os.linesep)
     variantPositionFileHandle.close()
+    # endregion
 
-numPartitions = len(studyFileNames)
-studyIndivRDD = sc.parallelize(studyFileNames, numPartitions)
-processResults = studyIndivRDD.map(lambda studyFileName: matchVariantPosInStudyFiles(bcfToolsDir, studyName, defaultGenotype, altGenotype, studyFileName, numTotVariants, studyFilesInputDir, variantPositionFileName, cassandraNodeIPs, keyspaceName, sampleDefaultsTableName, variantTableName, sampleInsertLogTableName)).collect()
-for result in processResults:
-    if result:
-        print(result)
+    # region Scan each sample file against the unique set of variant positions
+    # to insert sample genotypes at these positions
+    numPartitions = len(studyFileNames)
+    studyIndivRDD = sc.parallelize(studyFileNames, numPartitions)
+    processResults = studyIndivRDD.map(lambda studyFileName: matchVariantPosInStudyFiles(bcfToolsDir, studyName,
+                                                                                         studyFileName, studyFilesInputDir,
+                                                                                         variantPositionFileName,
+                                                                                         numTotVariants, defaultGenotype,
+                                                                                         missingGenotype, cassandraNodeIPs,
+                                                                                         keyspaceName,
+                                                                                         sampleDefaultsTableName,
+                                                                                         variantTableName,
+                                                                                         sampleInsertLogTableName)).collect()
+    # endregion
 
-local_session_var.shutdown()
-local_cluster_var.shutdown()
-sc.stop()
+    # region Print any error messages obtained from the process above
+    for result in processResults:
+        if result:
+            print(result)
+    # endregion
+
+    # region Shutdown Cassandra and Apache Spark
+    local_session_var.shutdown()
+    local_cluster_var.shutdown()
+    sc.stop()
+    # endregion

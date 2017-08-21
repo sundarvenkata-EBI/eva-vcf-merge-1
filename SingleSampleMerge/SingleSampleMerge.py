@@ -133,6 +133,7 @@ def cassandraInsert(vcfFileName):
     Insert the contents of a VCF file: variants and headers into relevant Cassandra tables 
     
     :param vcfFileName: Full path to the VCF file
+    :type vcfFileName: str
     :return: Total number of variants that were scanned from the VCF file
     :rtype: long
     """
@@ -170,9 +171,13 @@ def getSampleProcessedStatus(keyspaceName, sampleInsertLogTableName, studyName, 
     Check if the variants from a specific sample have already been inserted into the requisite Cassandra tables
     
     :param keyspaceName: Cassandra keyspace
+    :type keyspaceName: str
     :param sampleInsertLogTableName: Cassandra Sample Insert log table name
+    :type sampleInsertLogTableName: str
     :param studyName: Name of the study
+    :type studyName: str
     :param sampleName: Name of the sample
+    :type sampleName: str
     :return: True if variants were inserted for the given sample, False otherwise
     :rtype: bool
     """
@@ -192,6 +197,7 @@ def getTotDistinctVarPosFromSampleFiles(vcfInputDirectory):
     Get the total number of distinct variant positions from all the VCF files across all the samples
     
     :param vcfInputDirectory: Full path to the VCF directory
+    :type vcfInputDirectory: str
     :return: Total number of distinct variants
     :rtype: long
     """
@@ -204,26 +210,52 @@ def getTotDistinctVarPosFromSampleFiles(vcfInputDirectory):
     else: return long(float(totNumDistinctVarPos))
 
 def update_processing_status(keyspaceName, sampleInsertLogTableName, sampleName,
-                             session, studyName, totVarsInSample, proc_status):
+                             studyName, totVarsInSample, proc_status):
+    """
+    Helper function - Update processing status as the sample files are being processed. 
+    
+    :param keyspaceName: Cassandra key space with the variant table
+    :type keyspaceName: str
+    :param sampleInsertLogTableName: Cassandra sample insert log table to record the number of variants in the sample
+    :type sampleInsertLogTableName: str
+    :param sampleName: Sample name
+    :type sampleName: str
+    :param studyName: Study name (ex: PRJEB21300)
+    :type studyName: str
+    :param totVarsInSample: Total number of variants in the sample
+    :type totVarsInSample: long
+    :param proc_status: Processing status ("variants_filtered" or "variants_inserted")
+    :type proc_status: str
+    :return: 
+    """
     cassandraSession.execute(
         "insert into {0}.{1} (studyname, samplename, proc_status, num_variants) values ('{2}', '{3}', '{4}', {5})".format(
             keyspaceName, sampleInsertLogTableName, studyName, sampleName, proc_status, totVarsInSample))
 
 
-def processStudyFiles(studyName, studyFileName, cassandraNodeIPs, keyspaceName, headerTableName, variantTableName,
-                      sampleInsertLogTableName, uniquePosTableName, bcfToolsDir):
+def processStudyFiles(bcfToolsDir, studyName, studyFileName, cassandraNodeIPs, keyspaceName, headerTableName,
+                      variantTableName, sampleInsertLogTableName, uniquePosTableName):
     """
     Process a study file (runs on each core on each Apache Spark node)
     
-    :param studyName: Name of the study (ex: PRJEB21300) 
+    :param studyName: Name of the study (ex: PRJEB21300)
+    :type studyName: str
     :param studyFileName: Full path to the study file (ex: /mnt/shared_storage/PRJEB21300/StudySample1.vcf.gz)
-    :param cassandraNodeIPs: Set of "seed" IPs of Cassandra nodes to initialize connection 
-    :param keyspaceName: Cassandra key space (roughly analogous to a database) where the variant information should be written to 
+    :type studyFileName: str
+    :param cassandraNodeIPs: Set of "seed" IPs of Cassandra nodes to initialize connection
+    :type cassandraNodeIPs: list[str]
+    :param keyspaceName: Cassandra key space (roughly analogous to a database) where the variant information should be written to
+    :type keyspaceName: str
     :param headerTableName: Name of the Cassandra table that stores variant header information
-    :param variantTableName: Name of the Cassandra table that stores variant information 
+    :type headerTableName: str
+    :param variantTableName: Name of the Cassandra table that stores variant information
+    :type variantTableName: str
     :param sampleInsertLogTableName: Name of the Cassandra table that stores the status of variant insertion from a sample
+    :type sampleInsertLogTableName: str
     :param uniquePosTableName: Name of the Cassandra table that stores unique chromosome + start_pos information
+    :type uniquePosTableName: str
     :param bcfToolsDir: Directory containing the bcftools static binaries (ex: /mnt/shared_storage/bcftools)
+    :type bcfToolsDir: str
     :return: Tuple - (Total number of variants scanned, Error message if any) 
     """
     global cassandraCluster, cassandraSession, variantInsertStmt, headerInsertStmt, uniquePosInsertStmt
@@ -264,7 +296,7 @@ def processStudyFiles(studyName, studyFileName, cassandraNodeIPs, keyspaceName, 
                 filterCommandResult = -1
             else:
                 filterCommandResult = 0
-                update_processing_status(keyspaceName, sampleInsertLogTableName, sampleName, cassandraSession, studyName,
+                update_processing_status(keyspaceName, sampleInsertLogTableName, sampleName, studyName,
                                          0, "variants_filtered")
         else:
             filterCommandResult = 0
@@ -280,7 +312,7 @@ def processStudyFiles(studyName, studyFileName, cassandraNodeIPs, keyspaceName, 
 
         # region Update status to indicate that all variants have been inserted into Cassandra
         if not returnErrMsg and totVarsInSample != 0:
-            update_processing_status(keyspaceName, sampleInsertLogTableName, sampleName, cassandraSession, studyName,
+            update_processing_status(keyspaceName, sampleInsertLogTableName, sampleName, studyName,
                                      totVarsInSample, "variants_inserted")
         # endregion
 
@@ -355,15 +387,23 @@ if __name__ == '__main__':
                               .format(keyspaceName,uniquePosTableName))
     # endregion
 
-    # region Process study files in parallel
-    conf = SparkConf().setMaster("spark://{0}:7077".format(SSMergeCommonUtils.get_ip_address())).setAppName("SingleSampleVCFMerge").set("spark.cassandra.connection.host", cassandraNodeIPs[0]).set("spark.cassandra.read.timeout_ms", 1200000).set("spark.cassandra.connection.timeout_ms", 1200000)
+    # region Initialize Apache Spark
+    conf = SparkConf().setMaster("spark://{0}:7077".format(SSMergeCommonUtils.get_ip_address())).setAppName(
+        "SingleSampleVCFMerge").set("spark.cassandra.connection.host", cassandraNodeIPs[0]).set(
+        "spark.cassandra.read.timeout_ms", 1200000).set("spark.cassandra.connection.timeout_ms", 1200000)
     sc = SparkContext(conf=conf)
     sc.setLogLevel("INFO")
-    numPartitions = len(studyFileNames)
-    studyIndivRDD = sc.parallelize(studyFileNames, numPartitions)
-    results = studyIndivRDD.map(lambda entry: processStudyFiles(studyName, studyFilesInputDir + os.path.sep + entry, cassandraNodeIPs, keyspaceName, headerTableName, variantTableName, sampleInsertLogTableName, uniquePosTableName, bcfToolsDir)).collect()
     # endregion
 
+    # region Process study files in parallel
+    numPartitions = len(studyFileNames)
+    studyIndivRDD = sc.parallelize(studyFileNames, numPartitions)
+    results = studyIndivRDD.map(lambda entry: processStudyFiles(bcfToolsDir, studyName,
+                                                                studyFilesInputDir + os.path.sep + entry,
+                                                                cassandraNodeIPs, keyspaceName, headerTableName,
+                                                                variantTableName, sampleInsertLogTableName,
+                                                                uniquePosTableName)).collect()
+    # endregion
 
     # region Validate Cassandra record counts against record counts in the source file
     atleastOneError = False
@@ -403,7 +443,8 @@ if __name__ == '__main__':
         print("******************************************************************************************************")
     # endregion
 
+    # region Shutdown Cassandra and Apache Spark
     local_session_var.shutdown()
     local_cluster_var.shutdown()
-
     sc.stop()
+    # endregion

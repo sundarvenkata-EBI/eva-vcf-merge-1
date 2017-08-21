@@ -38,7 +38,7 @@ spark_cluster_creation - Ansible playbook to create a Spark cluster.
 
 6. If SingleSampleMerge.py ran successfully, run the ProcessVariantMatches.py as follows:
 
-   ```export SPARK_LOCAL_IP=<MASTER_NODE_IP> && ~/spark-2.2.0-bin-hadoop2.7/spark-submit --packages com.datastax.spark:spark-cassandra-connector_2.11:2.0.1 ProcessVariantMatches.py <Study PRJ ID> <Default Genotype> <Alternate Genotype> <Full Path to study files> <Cassandra node IP1> <Cassandra node IP2> <BCF Tools Directory>```
+   ```export SPARK_LOCAL_IP=<MASTER_NODE_IP> && ~/spark-2.2.0-bin-hadoop2.7/spark-submit --packages com.datastax.spark:spark-cassandra-connector_2.11:2.0.1 ProcessVariantMatches.py <Study PRJ ID> <Default Genotype> <Missing Genotype> <Full Path to study files> <Cassandra node IP1> <Cassandra node IP2> <BCF Tools Directory>```
    
    Example:
    

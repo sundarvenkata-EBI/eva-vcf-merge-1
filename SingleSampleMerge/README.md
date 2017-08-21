@@ -8,11 +8,22 @@ For a detailed discussion, see Proposal#2 in this [page](https://www.ebi.ac.uk/s
       
 # Project files
 
-SingleSampleMerge.py - Apache Spark job that processes the individual study files in parallel, filters out monomorphic references and inserts the variants into Apache Cassandra.
+**SingleSampleMerge.py** - First pass
 
-ProcessVariantMatches.py - Apache Spark job that scans the individual study for the unique variant positions obtained from Cassandra (after SingleSampleMerge.py has run). Based on how many positions match in the individual sample files, a default genotype is assumed (ex:0/0 for >50% match, ./. otherwise) for the entire sample in order to minimize the number of inserts made into Cassandra.
+Apache Spark job that:
+ 1. processes the individual study files in parallel 
+ 2. filters out monomorphic references 
+ 3. inserts the variants into Apache Cassandra
+ 4. determines the unique set of variant positions + their post-normalization positions 
 
-spark_cluster_creation - Ansible playbook to create a Spark cluster.
+**ProcessVariantMatches.py** - Second pass
+
+Apache Spark job that:
+ 1. scans the individual samples for the variant positions obtained from the first pass (i.e., after SingleSampleMerge.py has run). 
+ 2. inserts the _**non-default**_ genotypes encountered in each sample into Cassandra (based on how many positions match in the individual sample files, a default genotype is assumed for the entire sample in order to minimize the number of inserts made into Cassandra. For example: 0/0 for >50% match, ./. otherwise).
+
+
+**spark_cluster_creation** - Ansible playbook to create a Spark cluster.  
 
 # Steps to run the project
 
@@ -46,15 +57,16 @@ spark_cluster_creation - Ansible playbook to create a Spark cluster.
    
 7. After the above steps are run, the following output tables are created in Cassandra in the "variant_ksp" keyspace:
 
-    1. variant_ksp.variants_\<Study PRJ ID\> (ex: variant_ksp.variants_PRJEB21300) - Variant information processed from individual sample files ordered by Chromosome, Start position and Sample Name.
+    1. **variant_ksp.variants_\<Study PRJ ID\>** (ex: variant_ksp.variants_PRJEB21300) - Variant information processed from individual sample files ordered by Chromosome, Start position and Sample Name.
     ![variants_table](images/variants_table.jpg)
-    2. variant_ksp.headers_\<Study PRJ ID\> (ex: variant_ksp.headers_PRJEB21300) - Header information for each sample file that was processed.
+    2. **variant_ksp.headers_\<Study PRJ ID\>** (ex: variant_ksp.headers_PRJEB21300) - Header information for each sample file that was processed.
     ![headers_table](images/headers_table.jpg)
-    3. variant_ksp.sample_defaults_\<Study PRJ ID\> (ex: variant_ksp.sample_defaults_PRJEB21300)
+    3. **variant_ksp.sample_defaults_\<Study PRJ ID\>** (ex: variant_ksp.sample_defaults_PRJEB21300)
     ![sample_defaults_table](images/sample_defaults_table.jpg)
-    4. variant_ksp.sample_insert_log - Commit log that shows the running log of sample files that have been inserted (as denoted by the insert_flag).
+    4. **variant_ksp.sample_insert_log** - Commit log that shows the running log of sample files that have been inserted (as denoted by the insert_flag).
     ![sample_insert_log_table](images/sample_insert_log.jpg)
-    5. variant_ksp.study_info_\<Study PRJ ID\> (ex: variant_ksp.study_info_PRJEB21300) - Total and distinct counts of variants that were inserted from all the samples.
+    5. **variant_ksp.study_info_\<Study PRJ ID\>** (ex: variant_ksp.study_info_PRJEB21300) - Total and distinct counts of variants that were inserted from all the samples.
     ![study_info_table](images/study_info_table.jpg)
+    6. **variant_ksp.uniq_pos_\<Study PRJ ID\>** (ex: variant_ksp.uniq_pos_PRJEB21300) - Unique set of variant positions (includes both post-normalization and pre-normalization) scanned from all the VCF files during the first pass. 
     
-8. The output tables above should be used for processing the entries into 
+8. The output tables above should be used to sequentially process the variant records for the study and create a single VCF file that can be consumed by the [EVA-pipeline](https://github.com/EBIvariation/eva-pipeline/).

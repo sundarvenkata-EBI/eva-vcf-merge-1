@@ -26,6 +26,7 @@ class SingleSampleMerge:
         self.bcfToolsDir, self.studyName, self.studyVCFFileName, self.cassandraNodeIPs, self.keyspaceName, \
         self.headerTableName, self.variantTableName, self.sampleInsertLogTableName, self.uniquePosTableName = args
 
+        self.cassandraInsertCount = 0
         self.cassandraCluster = Cluster(self.cassandraNodeIPs)
         self.cassandraSession = self.cassandraCluster.connect(self.keyspaceName)
         self.sampleName = SSMergeCommonUtils.getSampleName(self.bcfToolsDir, self.studyVCFFileName)
@@ -41,11 +42,17 @@ class SingleSampleMerge:
             "insert into {0}.{1} (chrom, chunk, start_pos) VALUES (?,?,?)"
                 .format(self.keyspaceName, self.uniquePosTableName))
 
-    def processStudyFiles(self):
+
+    def processStudyFile(self):
+        """
+        Process the study file that this specific SingleSampleMerge object has been given
+        
+        :return: Triple - Total variants in sample, Total inserted variants in Cassandra, Error messages if any  
+        """
         samplePrefix, errFileContents, returnErrMsg, cassandraCluster, cassandraSession = None, None, None, None, None
         totVarsInSample = 0
 
-        if self.sample_proc_status == "variants_inserted": return (-1, "Already processed sample: {0} for study: {1}"
+        if self.sample_proc_status == "variants_inserted": return (-1,-1, "Already processed sample: {0} for study: {1}"
                                                                    .format(self.sampleName, self.studyName))
 
         try:
@@ -82,7 +89,7 @@ class SingleSampleMerge:
             # region Update status to indicate that all variants have been inserted into Cassandra
             if not returnErrMsg and totVarsInSample != 0:
                 self.update_processing_status(self.keyspaceName, self.sampleInsertLogTableName)
-                # endregion
+            # endregion
 
         except Exception, ex:
             returnErrMsg = "Error in processing file:{0}".format(self.studyVCFFileName) + os.linesep + ex.message \
@@ -94,8 +101,8 @@ class SingleSampleMerge:
                     cassandraCluster.shutdown()
                 except Exception, ex:
                     print(ex.message)
-            if returnErrMsg: return -1, returnErrMsg
-            return totVarsInSample, None
+            if returnErrMsg: return -1, -1, returnErrMsg
+            return totVarsInSample, self.cassandraInsertCount, None
 
     def writeVariantToCassandra(self, linesToWrite):
         """
@@ -135,6 +142,10 @@ class SingleSampleMerge:
 
         # Batch execute the insert statements added in the loop above
         self.cassandraSession.execute(batch, timeout=1200)
+        # Per https://datastax.github.io/python-driver/api/cassandra/cluster.html#cassandra.cluster.Session.execute
+        # the above call is synchronous and throws exception if not successful.
+        # If we get to this increment statement, it means that the insert was successful without exceptions.
+        self.cassandraInsertCount += len(linesToWrite)
 
     def writeHeaderToCassandra(self, headerLines):
         """
@@ -243,7 +254,7 @@ def processStudyFiles(bcfToolsDir, studyName, studyVCFFileName, cassandraNodeIPs
     """
     ssMergeObj = SingleSampleMerge(bcfToolsDir, studyName, studyVCFFileName, cassandraNodeIPs, keyspaceName, headerTableName,
                                    variantTableName, sampleInsertLogTableName, uniquePosTableName)
-    ssMergeObj.processStudyFiles()
+    ssMergeObj.processStudyFile()
 
 
 def mainFunc():
@@ -316,13 +327,15 @@ def mainFunc():
     # region Validate Cassandra record counts against record counts in the source file
     atleastOneError = False
     totVarsInSampleFiles = 0
+    totCassandraInsertCount = 0
 
-    for (totVarsInSample, errMsg) in results:
+    for (totVarsInSample, cassandraInsertCount, errMsg) in results:
         if errMsg:
             print(errMsg)
             atleastOneError = True
         else:
             totVarsInSampleFiles += totVarsInSample
+            totCassandraInsertCount += cassandraInsertCount
 
     totDistinctVarPosInSampleFiles = SSMergeCommonUtils.getTotDistinctVarPosFromSampleFiles(studyFilesInputDir)
     if not atleastOneError:
@@ -331,15 +344,13 @@ def mainFunc():
         variants = sql.read.format("org.apache.spark.sql.cassandra"). \
             load(keyspace=keyspaceName, table=variantTableName)
         variants.registerTempTable("variantsTable")
-        resultDF = sql.sql("select chrom,start_pos from variantsTable")
-        totNumVariantsInserted = resultDF.count()
         resultDF = sql.sql("select chrom,start_pos from variantsTable group by 1,2")
         totNumDistinctVariantsInserted = resultDF.count()
 
         # Register counts of variants
         local_session_var.execute("insert into {0}.{1} (studyname, tot_num_variants, distinct_num_variant_pos) "
                                   "values ('{2}',{3}, {4})"
-                                  .format(keyspaceName, studyInfoTableName, studyName, totNumVariantsInserted,
+                                  .format(keyspaceName, studyInfoTableName, studyName, totCassandraInsertCount,
                                           totNumDistinctVariantsInserted))
 
         print("******************************************************************************************************")
@@ -347,7 +358,7 @@ def mainFunc():
         print("Number of distinct variant positions as counted from source files: {0}".format(
             str(totDistinctVarPosInSampleFiles)))
 
-        print("Number of variant inserts recorded as retrieved from Cassandra: {0}".format(str(totNumVariantsInserted)))
+        print("Number of variant inserts recorded as retrieved from Cassandra: {0}".format(str(totCassandraInsertCount)))
         print("Number of distinct variant positions as retrieved from Cassandra: {0}".format(
             str(totNumDistinctVariantsInserted)))
         print("******************************************************************************************************")

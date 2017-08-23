@@ -34,11 +34,12 @@ class ProcessVariantMatch:
             "insert into {0}.{1} (chrom,chunk,start_pos,ref,alt,samplename, sampleinfoformat, sampleinfo) "
             "values (?,?,?,?,?,?,?,?)".format(self.keyspaceName, self.variantTableName))
 
-    def insertDefaultGenotypeToCassandra(self):
+    def insertFreqGenotypeToCassandra(self, assumedFrequentGenotype):
         """
-        Insert default genotype, assumed for a given sample, into Cassandra.            
+        Insert the most frequent genotype, assumed for a given sample, into Cassandra.            
         """
-        self.cassandraSession.execute(self.defaultGenotypeInsertPrepStmt.bind([self.sampleName, self.defaultGenotype]))
+        self.cassandraSession.execute(self.defaultGenotypeInsertPrepStmt.bind
+                                      ([self.sampleName, assumedFrequentGenotype]))
 
     @staticmethod
     def getVariantInfo(matchLine):
@@ -53,7 +54,7 @@ class ProcessVariantMatch:
         chunk = int(varPosMatch / SSMergeCommonUtils.CHR_POS_CHUNKSIZE)
         return chromMatch, varPosMatch, ref, alt, genotype, formatMatch, sampleinfoMatch, chunk
 
-    def processVariantMatchFile(self, matchOutputFileName):
+    def processVariantMatchFile(self, matchOutputFileName, assumedFrequentGenotype):
         """
         Process a variant match file that is generated for every sample. The variant match file contains only entries 
         at the variant positions (determined from the first pass. see SingleSampleMerge.py) for a given sample.
@@ -61,9 +62,11 @@ class ProcessVariantMatch:
         :param matchOutputFileName: Output file that contains the result of the sample file matched against the variant
                                     position file
         :type matchOutputFileName: str
+        :param assumedFrequentGenotype: Dominant genotype assumed for the sample
+        :type assumedFrequentGenotype: str
         """
         # Insert default genotype assumed for the sample into Cassandra
-        self.insertDefaultGenotypeToCassandra()
+        self.insertFreqGenotypeToCassandra(assumedFrequentGenotype)
 
         # Compare the universal variant list against the matches found at variant positions in the individual sample files
         with gzip.open(self.variantPositionFileName, "rb") as varListFile:
@@ -94,24 +97,23 @@ class ProcessVariantMatch:
                         # if we have evidence otherwise i.e.,no variant was found at a position in the sample (or)
                         # the variant found at the position had a different genotype than the default genotype (ex: 0/1)
                         if (chromToFind, varPosToFind) == (chromMatch, varPosMatch):
-                            if genotype == self.defaultGenotype or alt != '.': break
+                            if genotype == assumedFrequentGenotype or alt != '.': break
                             self.cassandraSession.execute(self.variantInsertPrepStmt.bind(
                                     [chromToFind, chunk, varPosToFind, ref, alt,
                                      self.sampleName, formatMatch, sampleinfoMatch]))
                             break
                         else:
-                            if self.defaultGenotype != "./." and self.defaultGenotype != ".|.":
+                            if assumedFrequentGenotype != "./." and assumedFrequentGenotype != ".|.":
                                 self.cassandraSession.execute(self.variantInsertPrepStmt.bind(
                                     [chromToFind, chunk, varPosToFind, ref, alt,
                                      self.sampleName, "GT", self.missingGenotype]))
 
 
-    def getNumMatchedVariants(self):
+    def getNumVariantsInSample(self):
         """
-        Get number of matched variant positions in a given sample when matched 
-        against the universal set of variant positions from the first pass (see SingleSampleMerge.py)
+        Get number of variant positions recorded for a given sample during the first pass (see SingleSampleMerge.py)
         
-        :return: Number of variant positions matched for the given sample
+        :return: Number of variant positions recorded for the sample
         :rtype: int
         """
         rows = self.cassandraSession.execute ("select num_variants from {0}.{1} where studyname = '{2}' "
@@ -150,21 +152,21 @@ class ProcessVariantMatch:
             errlines = errFileHandle.readlines()
             errFileHandle.close()
             if not errlines:
-                numMatchedVariants = self.getNumMatchedVariants()
-                if (self.numTotVariants * 1.0 / numMatchedVariants) > 2:
-                    self.processVariantMatchFile(matchOutputFileName)
+                numVariantsInSample = self.getNumVariantsInSample()
+                # Default to the missing genotype if there were less than 50% of the total variants in the sample
+                if (self.numTotVariants * 1.0 / numVariantsInSample) > 2:
+                    self.processVariantMatchFile(matchOutputFileName, self.missingGenotype)
                 else:
-                    self.processVariantMatchFile(variantPositionFileName, matchOutputFileName, sampleName, defaultGenotype,
-                                            missingGenotype)
+                    self.processVariantMatchFile(matchOutputFileName, self.defaultGenotype)
             else:
                 returnErrMsg = "Error in processing file:{0}".format(
                     chosenFileToProcess) + os.linesep + os.linesep.join(errlines)
         except Exception, e:
             returnErrMsg = "Error in processing file:{0}".format(
-                chosenFileToProcess) + os.linesep + traceback.format_exc()
+                chosenFileToProcess) + os.linesep + e.message + os.linesep + traceback.format_exc()
         finally:
-            cassandraCluster.shutdown()
-            cassandraSession.shutdown()
+            self.cassandraCluster.shutdown()
+            self.cassandraSession.shutdown()
             if returnErrMsg: return returnErrMsg
             return None
 
@@ -272,6 +274,7 @@ def mainFunc():
 
     variantPositionFileHandle = gzip.open(variantPositionFileName, "wb")
     for result in iterator:
+        # For some reason, if you don't store the output of the write, every write result is echoed to the screen!!!
         discardOutput = variantPositionFileHandle.write(result["chrom"] + "\t" + str(result["start_pos"]) + os.linesep)
     variantPositionFileHandle.close()
     # endregion
@@ -280,15 +283,16 @@ def mainFunc():
     # to insert sample genotypes at these positions
     numPartitions = len(studyVCFFileNames)
     studyIndivRDD = sc.parallelize(studyVCFFileNames, numPartitions)
-    processResults = studyIndivRDD.map(lambda studyVCFFileName: matchVariantPosInStudyFiles(bcfToolsDir, studyName,
-                                                                                         studyVCFFileName, studyFilesInputDir,
-                                                                                         variantPositionFileName,
-                                                                                         numTotVariants, defaultGenotype,
-                                                                                         missingGenotype, cassandraNodeIPs,
-                                                                                         keyspaceName,
-                                                                                         sampleDefaultsTableName,
-                                                                                         variantTableName,
-                                                                                         sampleInsertLogTableName)).collect()
+    processResults = studyIndivRDD.map(lambda studyVCFFileName:
+                                       matchVariantPosInStudyFiles(bcfToolsDir, studyName,
+                                                                         studyVCFFileName, studyFilesInputDir,
+                                                                         variantPositionFileName,
+                                                                         numTotVariants, defaultGenotype,
+                                                                         missingGenotype, cassandraNodeIPs,
+                                                                         keyspaceName,
+                                                                         sampleDefaultsTableName,
+                                                                         variantTableName,
+                                                                         sampleInsertLogTableName)).collect()
     # endregion
 
     # region Print any error messages obtained from the process above

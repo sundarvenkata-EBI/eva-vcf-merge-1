@@ -11,9 +11,7 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
-
 import socket, glob, os, subprocess
-
 
 def getSampleName(bcfToolsDir, vcfFileName):
     """
@@ -75,7 +73,7 @@ def getTotDistinctVarPosFromSampleFiles(vcfInputDirectory):
     :rtype: long
     """
     procResult = subprocess.Popen(
-        'zcat {0}/*_filtervcf.gz | grep -v "^#" | cut -f1,2 | sort | uniq | wc -l'.format(vcfInputDirectory),
+        'zcat {0}/*_filtervcf.gz | grep -v "^#" | cut -f1,2 | sort -T {0} | uniq | wc -l'.format(vcfInputDirectory),
         shell=True,
         stdout=subprocess.PIPE)
     totNumDistinctVarPos, errMsg = procResult.communicate()

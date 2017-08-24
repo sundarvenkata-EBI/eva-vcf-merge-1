@@ -39,7 +39,7 @@ class SingleSampleMerge:
         self.headerInsertStmt = self.cassandraSession.prepare("insert into {0}.{1} (samplename, header) VALUES (?,?)"
                                                               .format(self.keyspaceName, self.headerTableName))
         self.uniquePosInsertStmt = self.cassandraSession.prepare(
-            "insert into {0}.{1} (chrom, chunk, start_pos) VALUES (?,?,?)"
+            "insert into {0}.{1} (chrom, chunk, in_src, start_pos) VALUES (?,?,?,?)"
                 .format(self.keyspaceName, self.uniquePosTableName))
 
 
@@ -52,7 +52,9 @@ class SingleSampleMerge:
         samplePrefix, errFileContents, returnErrMsg, cassandraCluster, cassandraSession = None, None, None, None, None
         totVarsInSample = 0
 
-        if self.sample_proc_status == "variants_inserted": return (-1,-1, "Already processed sample: {0} for study: {1}"
+        if self.sample_proc_status == "variants_inserted":
+            # return 0,0,None
+            return (-1,-1, "Already processed sample: {0} for study: {1}"
                                                                    .format(self.sampleName, self.studyName))
 
         try:
@@ -73,7 +75,7 @@ class SingleSampleMerge:
                     filterCommandResult = -1
                 else:
                     filterCommandResult = 0
-                    self.update_processing_status(0, "variants_filtered")
+                    self.update_processing_status("variants_filtered")
             else:
                 filterCommandResult = 0
             # endregion
@@ -88,7 +90,7 @@ class SingleSampleMerge:
 
             # region Update status to indicate that all variants have been inserted into Cassandra
             if not returnErrMsg and totVarsInSample != 0:
-                self.update_processing_status(self.keyspaceName, self.sampleInsertLogTableName)
+                self.update_processing_status("variants_inserted")
             # endregion
 
         except Exception, ex:
@@ -125,12 +127,12 @@ class SingleSampleMerge:
             chunk = int(position / SSMergeCommonUtils.CHR_POS_CHUNKSIZE)
 
             # Insert the chromosome position that was scanned
-            batch.add(self.uniquePosInsertStmt.bind([chromosome, chunk, position]))
+            batch.add(self.uniquePosInsertStmt.bind([chromosome, chunk, 1, position]))
             # Also, insert the normalized chromosome positions for each alternate allele
             for altAllele in alt.split(","):
                 revised_start_pos = SSMergeCommonUtils.getNormalizedStartPos(chromosome, position, ref, altAllele)
                 if revised_start_pos != position:
-                    batch.add(self.uniquePosInsertStmt.bind([chromosome, chunk, revised_start_pos]))
+                    batch.add(self.uniquePosInsertStmt.bind([chromosome, chunk, 0, revised_start_pos]))
 
             # Unique Variant ID is chromosome_12-digit zero padded start_MD5(REF_ALT)_20-character samplename
             variantID = chromosome + "_" + str(position).zfill(12) + "_" + hashlib.md5(ref + "_" + alt).hexdigest() \
@@ -199,10 +201,9 @@ class SingleSampleMerge:
         :return: True if variants were inserted for the given sample, False otherwise
         :rtype: bool
         """
-        allrows = self.cassandraSession.execute("select proc_status from {0}.{1} where studyname = '{2}' "
-                                                "and samplename = '{3}';"
-                                                .format(self.keyspaceName, self.sampleInsertLogTableName, self.studyName
-                                                        , self.sampleName))
+        allrows = self.cassandraSession.execute("select proc_status from {0}.{1} where samplename = '{2}' allow filtering;"
+                                                .format(self.keyspaceName, self.sampleInsertLogTableName,
+                                                        self.sampleName), timeout=None)
         if allrows:
             allrows = iter(allrows)
             firstRow = allrows.next()
@@ -211,20 +212,17 @@ class SingleSampleMerge:
         if firstRow.proc_status: return firstRow.proc_status
         return ""
 
-    def update_processing_status(self, totVarsInSample, proc_status):
+    def update_processing_status(self, proc_status):
         """
-        Helper function - Update processing status as the sample files are being processed.
+        Helper function - Update processing status as the sample files are being processed.        
         
-        :param totVarsInSample: Total number of variants in the sample
-        :type totVarsInSample: long
         :param proc_status: Processing status ("variants_filtered" or "variants_inserted")
         :type proc_status: str
         :return: 
         """
         self.cassandraSession.execute(
-            "insert into {0}.{1} (studyname, samplename, proc_status, num_variants) values ('{2}', '{3}', '{4}', {5})"
-                .format(self.keyspaceName, self.sampleInsertLogTableName, self.studyName, self.sampleName,
-                        proc_status, totVarsInSample))
+            "insert into {0}.{1} (samplename, proc_status) values ('{2}', '{3}')"
+                .format(self.keyspaceName, self.sampleInsertLogTableName, self.sampleName,proc_status))
 
 
 def processStudyFiles(bcfToolsDir, studyName, studyVCFFileName, cassandraNodeIPs, keyspaceName, headerTableName,
@@ -250,11 +248,81 @@ def processStudyFiles(bcfToolsDir, studyName, studyVCFFileName, cassandraNodeIPs
     :type uniquePosTableName: str
     :param bcfToolsDir: Directory containing the bcftools static binaries (ex: /mnt/shared_storage/bcftools)
     :type bcfToolsDir: str
-    :return: Tuple - (Total number of variants scanned, Error message if any) 
+    :return: Triple - Total variants in sample, Total inserted variants in Cassandra, Error messages if any 
     """
     ssMergeObj = SingleSampleMerge(bcfToolsDir, studyName, studyVCFFileName, cassandraNodeIPs, keyspaceName, headerTableName,
                                    variantTableName, sampleInsertLogTableName, uniquePosTableName)
-    ssMergeObj.processStudyFile()
+    return ssMergeObj.processStudyFile()
+
+def getChromChunkSet(cassandraSession, keyspaceName, uniquePosTableName):
+    """
+    Helper function - Get the set of chromosome, chunk combinations for the study
+    
+    :param cassandraSession: Cassandra session object
+    :param keyspaceName: Cassandra keyspace that holds the table with the unique variant positions 
+    :param uniquePosTableName: Name of the Cassandra table that holds the unique variant positions
+    :return: Set of unique chromosome, chunk combinations
+    """
+    chromChunkSet = set()
+    # Due to Cassandra's limitations, we cannot filter for in_src = 1. Instead we filter this manually as shown below.
+    results = cassandraSession.execute("select distinct chrom, chunk, in_src from {0}.{1};"
+                                       .format(keyspaceName, uniquePosTableName), timeout=None)
+    for result in results:
+        if result.in_src == 1:
+            chromChunkSet.add((result.chrom, result.chunk))
+    return chromChunkSet
+
+
+def getCassandraTotVarsCount(cassandraNodeIPs, keyspaceName, variantTableName, chrom, chunk):
+    cluster = Cluster(cassandraNodeIPs)
+    session = cluster.connect()
+    results = session.execute ("select count(*) as num_variants from {0}.{1} where chrom = '{2}' and chunk = {3};"\
+        .format(keyspaceName, variantTableName, chrom, chunk), timeout=None)
+    if results:
+        results = iter(results)
+        return results.next().num_variants
+    else:
+        return 0
+
+
+def getCassandraTotVarsCount(sparkContext, keyspaceName, variantTableName, chrom, chunk):
+    """
+    Helper function - Get total variants count from Cassandra
+    
+    :param sparkContext: Apache Spark context 
+    :param keyspaceName: Cassandra keyspace that holds the table with the variants 
+    :param variantTableName: Name of the Cassandra variant table
+    :param chrom: Chromosome to look for
+    :param chunk: Chunk to look for
+    :return: Number of records in Cassandra variant table for the given chromosome and chunk 
+    """
+    sql = SQLContext(sparkContext)
+    variants = sql.read.format("org.apache.spark.sql.cassandra"). \
+        load(keyspace=keyspaceName, table=variantTableName)
+    variants.registerTempTable("variantsTable")
+    resultDF = sql.sql("select chrom, start_pos from variantsTable where chrom = '{0}' and chunk = {1}"
+                             .format(chrom, chunk))
+    return resultDF.count()
+
+
+def getCassandraDistinctVarPosCount(sparkContext, keyspaceName, uniquePosTableName, chrom, chunk):
+    """
+    Helper function - Get total number of distinct variant positions from Cassandra
+    
+    :param sparkContext: Apache Spark context
+    :param keyspaceName: Cassandra keyspace that holds the table with the unique variant positions
+    :param uniquePosTableName: Name of the Cassandra table that holds the unique variant positions
+    :param chrom: Chromosome to look for
+    :param chunk: Chunk to look for
+    :return: Number of distinct variant positions stored in Cassandra for the given chromosome and chunk
+    """
+    sql = SQLContext(sparkContext)
+    variants = sql.read.format("org.apache.spark.sql.cassandra"). \
+        load(keyspace=keyspaceName, table=uniquePosTableName)
+    variants.registerTempTable("uniquePosTable")
+    resultDF = sql.sql("select chrom, start_pos from uniquePosTable where chrom = '{0}' and chunk = {1} and in_src = 1"
+                       .format(chrom, chunk))
+    return resultDF.count()
 
 
 def mainFunc():
@@ -275,7 +343,7 @@ def mainFunc():
     keyspaceName = "variant_ksp"
     variantTableName = "variants_{0}".format(studyName.lower())
     headerTableName = "headers_{0}".format(studyName.lower())
-    sampleInsertLogTableName = "sample_insert_log"
+    sampleInsertLogTableName = "sample_insert_log_{0}".format(studyName.lower())
     studyInfoTableName = "study_info_{0}".format(studyName.lower())
     uniquePosTableName = "uniq_pos_{0}".format(studyName.lower())
     local_cluster_var = Cluster(cassandraNodeIPs)
@@ -293,16 +361,15 @@ def mainFunc():
                               "primary key((chrom, chunk), start_pos, var_uniq_id, samplename));"
                               .format(keyspaceName, variantTableName))
     local_session_var.execute("create table if not exists {0}.{1} "
-                              "(studyname varchar, samplename varchar, proc_status varchar, num_variants bigint, "
-                              "primary key((studyname, samplename)));"
+                              "(samplename varchar, proc_status varchar, primary key(samplename));"
                               .format(keyspaceName, sampleInsertLogTableName))
     local_session_var.execute("create table if not exists {0}.{1} "
                               "(studyname varchar, tot_num_variants bigint, distinct_num_variant_pos bigint, "
                               "primary key(studyname));"
                               .format(keyspaceName, studyInfoTableName))
     local_session_var.execute("create table if not exists {0}.{1} "
-                              "(chrom varchar, chunk int, start_pos bigint, "
-                              "primary key((chrom,chunk), start_pos));"
+                              "(chrom varchar, chunk int, in_src int, start_pos bigint, "
+                              "primary key((chrom,chunk,in_src), start_pos));"
                               .format(keyspaceName, uniquePosTableName))
     # endregion
 
@@ -311,7 +378,7 @@ def mainFunc():
         "SingleSampleVCFMerge").set("spark.cassandra.connection.host", cassandraNodeIPs[0]).set(
         "spark.cassandra.read.timeout_ms", 1200000).set("spark.cassandra.connection.timeout_ms", 1200000)
     sc = SparkContext(conf=conf)
-    sc.setLogLevel("INFO")
+    sc.setLogLevel("WARN")
     # endregion
 
     # region Process study files in parallel
@@ -327,40 +394,52 @@ def mainFunc():
     # region Validate Cassandra record counts against record counts in the source file
     atleastOneError = False
     totVarsInSampleFiles = 0
-    totCassandraInsertCount = 0
+    totDistinctVarPosInSampleFiles = 0
+    totVarsInCassandra = 0
+    totDistinctVarPosInCassandra = 0
 
-    for (totVarsInSample, cassandraInsertCount, errMsg) in results:
+    for (totVarsInSample, discarded, errMsg) in results:
         if errMsg:
             print(errMsg)
             atleastOneError = True
         else:
+            # Count the number of variants in the sample VCF files
             totVarsInSampleFiles += totVarsInSample
-            totCassandraInsertCount += cassandraInsertCount
 
-    totDistinctVarPosInSampleFiles = SSMergeCommonUtils.getTotDistinctVarPosFromSampleFiles(studyFilesInputDir)
     if not atleastOneError:
+
+        # Count the number of distinct variant positions in the sample VCF files
+        totDistinctVarPosInSampleFiles = SSMergeCommonUtils.getTotDistinctVarPosFromSampleFiles(studyFilesInputDir)
+
         # Count the number of variants from the variants table
-        sql = SQLContext(sc)
-        variants = sql.read.format("org.apache.spark.sql.cassandra"). \
-            load(keyspace=keyspaceName, table=variantTableName)
-        variants.registerTempTable("variantsTable")
-        resultDF = sql.sql("select chrom,start_pos from variantsTable group by 1,2")
-        totNumDistinctVariantsInserted = resultDF.count()
+        chromChunkSet = getChromChunkSet(local_session_var, keyspaceName, uniquePosTableName)
+        for chromChunk in chromChunkSet:
+            tempCount = getCassandraTotVarsCount(sc, keyspaceName, variantTableName,
+                                     chromChunk[0], chromChunk[1])
+            totVarsInCassandra += tempCount
+            print("Total variant count for chromosome {0} and chunk {1}: {2}"
+                  .format(chromChunk[0], chromChunk[1], tempCount))
+
+            tempCount = getCassandraDistinctVarPosCount(sc, keyspaceName, uniquePosTableName,
+                                                                chromChunk[0], chromChunk[1])
+            totDistinctVarPosInCassandra += tempCount
+            print("Total unique variant positions for chromosome {0} and chunk {1}: {2}"
+              .format(chromChunk[0], chromChunk[1], tempCount))
 
         # Register counts of variants
         local_session_var.execute("insert into {0}.{1} (studyname, tot_num_variants, distinct_num_variant_pos) "
                                   "values ('{2}',{3}, {4})"
-                                  .format(keyspaceName, studyInfoTableName, studyName, totCassandraInsertCount,
-                                          totNumDistinctVariantsInserted))
+                                  .format(keyspaceName, studyInfoTableName, studyName, totVarsInCassandra,
+                                          totDistinctVarPosInCassandra))
 
         print("******************************************************************************************************")
         print("Number of variants as counted from source files: {0}".format(str(totVarsInSampleFiles)))
         print("Number of distinct variant positions as counted from source files: {0}".format(
             str(totDistinctVarPosInSampleFiles)))
 
-        print("Number of variant inserts recorded as retrieved from Cassandra: {0}".format(str(totCassandraInsertCount)))
+        print("Number of variant inserts recorded as retrieved from Cassandra: {0}".format(str(totVarsInCassandra)))
         print("Number of distinct variant positions as retrieved from Cassandra: {0}".format(
-            str(totNumDistinctVariantsInserted)))
+            str(totDistinctVarPosInCassandra)))
         print("******************************************************************************************************")
     # endregion
 

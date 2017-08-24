@@ -116,10 +116,9 @@ class ProcessVariantMatch:
         :return: Number of variant positions recorded for the sample
         :rtype: int
         """
-        rows = self.cassandraSession.execute ("select num_variants from {0}.{1} where studyname = '{2}' "
-                                              "and samplename = '{3}'"
+        rows = self.cassandraSession.execute ("select num_variants from {0}.{1} where samplename = '{2}';"
                                               .format(self.keyspaceName, self.sampleInsertLogTableName,
-                                                      self.studyName, self.sampleName))
+                                                      self.sampleName), timeout=None)
         if rows:
             rows = iter(rows)
             return rows.next().num_variants
@@ -236,7 +235,7 @@ def mainFunc():
     # region Initialize variant, header, sample insert log and study table names in Cassandra
     keyspaceName = "variant_ksp"
     variantTableName = "variants_{0}".format(studyName.lower())
-    sampleInsertLogTableName = "sample_insert_log"
+    sampleInsertLogTableName = "sample_insert_log_{0}".format(studyName.lower())
     sampleDefaultsTableName = "sample_defaults_{0}".format(studyName.lower())
     studyInfoTableName = "study_info_{0}".format(studyName.lower())
     uniquePosTableName = "uniq_pos_{0}".format(studyName.lower())

@@ -1,4 +1,4 @@
-import unittest, tempfile, SingleSampleMerge, ftplib, os, re, random, string, hashlib, traceback, SSMergeCommonUtils
+import unittest, tempfile, SingleSampleMerge, ftplib, os, re, hashlib, gzip, SSMergeCommonUtils
 from cassandra.cluster import Cluster
 
 
@@ -144,14 +144,44 @@ class TestStringDiffIndex(unittest.TestCase):
             self.fail("No result rows")
 
 
+    def test_writeHeaderToCassandra(self):
+        headerLines = ""
+        with gzip.open(self.ssMergeObj.studyVCFFileName,"rb") as studyVCFFileHandle:
+            while True:
+                line = studyVCFFileHandle.readline()
+                if line.startswith("#"):
+                    headerLines += line + os.linesep
+                else:
+                    break
+        headerLines = headerLines.strip()
+        self.ssMergeObj.writeHeaderToCassandra(headerLines)
+        results = self.ssMergeObj.cassandraSession.execute("select header from {0}.{1} where samplename = '{2}' "
+                                                           "allow filtering;"
+                                                 .format(self.ssMergeObj.keyspaceName, self.ssMergeObj.headerTableName,
+                                                         self.ssMergeObj.sampleName))
+        if results:
+            results = iter(results)
+            self.assertEqual(headerLines, results.next().header)
+        else:
+            self.fail("Header insert test failed!")
+
+    def test_updateProcessingStatus(self):
+        proc_status = "variants_filtered"
+        self.ssMergeObj.update_processing_status(proc_status)
+        self.assertEqual(self.ssMergeObj.getSampleProcessedStatus(), proc_status)
+
+        proc_status = "variants_inserted"
+        self.ssMergeObj.update_processing_status(proc_status)
+        self.assertEqual(self.ssMergeObj.getSampleProcessedStatus(), proc_status)
+
     def createSingleSampleMergeObj(self):
         bcfToolsDir = os.getenv("HOME") + os.path.sep + "bcftools"
         keyspaceName = "variant_ksp"
         randomSuffix = "test"
-        variantTableName = "variant_" + randomSuffix
+        variantTableName = "variants_" + randomSuffix
         uniquePosTableName = "uniq_pos_" + randomSuffix
-        headerTableName = "header_" + randomSuffix
-        sampleInsertLogTableName = "sample_insert_log"
+        headerTableName = "headers_" + randomSuffix
+        sampleInsertLogTableName = "sample_insert_log_"+ randomSuffix
         cassandraNodeIPs = "172.22.70.148,172.22.70.139,172.22.70.150,172.22.68.19".split(",")
         studyName = "PRJEBTEST"
         studyVCFFileName = os.getenv("HOME") + os.path.sep + "mergevcfinput/PRJEBTEST" + os.path.sep + "Proband-1152.vcf.gz"
@@ -172,16 +202,15 @@ class TestStringDiffIndex(unittest.TestCase):
                                   "primary key((chrom, chunk), start_pos, var_uniq_id, samplename));"
                                   .format(keyspaceName, variantTableName))
         local_session_var.execute("create table if not exists {0}.{1} "
-                                  "(studyname varchar, samplename varchar, proc_status varchar, num_variants bigint, "
-                                  "primary key((studyname, samplename)));"
+                                  "(samplename varchar, proc_status varchar, primary key(samplename));"
                                   .format(keyspaceName, sampleInsertLogTableName))
         local_session_var.execute("create table if not exists {0}.{1} "
                                   "(studyname varchar, tot_num_variants bigint, distinct_num_variant_pos bigint, "
                                   "primary key(studyname));"
                                   .format(keyspaceName, studyInfoTableName))
         local_session_var.execute("create table if not exists {0}.{1} "
-                                  "(chrom varchar, chunk int, start_pos bigint, "
-                                  "primary key((chrom,chunk), start_pos));"
+                                  "(chrom varchar, chunk int, in_src int, start_pos bigint, "
+                                  "primary key((chrom,chunk,in_src), start_pos));"
                                   .format(keyspaceName, uniquePosTableName))
 
         for tableName in [headerTableName, variantTableName, studyInfoTableName, uniquePosTableName]:

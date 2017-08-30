@@ -143,3 +143,6 @@ def stringDiffIndex(string1, string2):
 # Determines which variants are written to which nodes based on their chromosome and position.
 # For ex: variant at chr 1 and position 1M will be written to a different node than the variant at chr 2 and position 2M.
 CHR_POS_CHUNKSIZE = int(1e6)
+
+LARGE_QUERY_TIMEOUT_IN_SECS = 12000
+BATCH_WRITE_TIMEOUT_IN_SECS = 1200

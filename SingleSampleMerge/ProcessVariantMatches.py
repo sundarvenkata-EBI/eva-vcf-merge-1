@@ -80,9 +80,10 @@ class ProcessVariantMatch:
                         varPosToFind = long(float(varPosToFind))
 
                         # region Handle an edge case THAT SHOULD NOT HAPPEN
-                        # If a variant position from the universal variant list is farther than
+                        # If a variant position from the universal variant position list is farther than
                         # the position in the match file. This can happen if the match file has multiple entries for
-                        # the same position. In such cases, forward to a position in the match file
+                        # the same position. In such cases, forward to a position in the match file which is greater than
+                        # or equal to the variant position from the universal variant position list.
                         while varPosToFind > varPosMatch:
                             matchLine = varMatchFile.readline()
                             if not matchLine: return
@@ -129,15 +130,7 @@ class ProcessVariantMatch:
         returnErrMsg = None
         chosenFileToProcess = self.studyVCFFileName
         try:
-            baseDir = self.studyFilesInputDir
-            os.chdir(baseDir)
-            sampleNameCmd = subprocess.Popen("{0}/bin/bcftools query -l {1}"
-                                             .format(self.bcfToolsDir,chosenFileToProcess),shell=True,
-                                                        stdout=subprocess.PIPE)
-            sampleName, err = sampleNameCmd.communicate()
-            if err: return "Could not obtain sample name from the SNP file:{0}".format(chosenFileToProcess)
-            sampleName = sampleName.strip()
-
+            sampleName = SSMergeCommonUtils.getSampleName(self.bcfToolsDir, self.studyVCFFileName)
             matchOutputFileName = sampleName + "_variantmatch.gz"
             errFileName = sampleName + "_variantmatch.err"
             bcfVariantMatchCmd = "({0}/bin/bcftools query -f'%CHROM\\t%POS\\t%REF\\t%ALT[\\t%GT]\\t%LINE' -T {1} {3} " \
@@ -147,9 +140,7 @@ class ProcessVariantMatch:
                 self.bcfToolsDir, self.variantPositionFileName, matchOutputFileName, chosenFileToProcess, errFileName)
 
             os.system(bcfVariantMatchCmd)
-            errFileHandle = open(errFileName, "r")
-            errlines = errFileHandle.readlines()
-            errFileHandle.close()
+            errlines = SSMergeCommonUtils.getErrFileContents(errFileName)
             if not errlines:
                 numVariantsInSample = self.getNumVariantsInSample()
                 # Default to the missing genotype if there were less than 50% of the total variants in the sample
@@ -211,25 +202,47 @@ def matchVariantPosInStudyFiles(bcfToolsDir, studyName, studyVCFFileName, studyF
                                 sampleDefaultsTableName, variantTableName, sampleInsertLogTableName)
     procVarMatch.matchVariantPosInStudyFiles()
 
+# Helper function to get the total number of variants in the study
+def getTotNumVariantsForStudy(keyspaceName, cassandraSession, studyInfoTableName, studyName):
+    rows = cassandraSession.execute("select tot_num_variants from {0}.{1};".format(keyspaceName, studyInfoTableName))
+    numTotVariants = 0
+    if rows:
+        rows = iter(rows)
+        numTotVariants = rows.next().tot_num_variants
+    else:
+        raise Exception("Could not obtain number of variants for the study: {0} from the table: {1}.{2}"
+                        .format(studyName, keyspaceName, studyInfoTableName))
+    return numTotVariants
+
+# Helper function to write the unique variant positions from the first pass into a single file
+def genVarPosFile(keyspaceName, sparkContext, studyFilesInputDir, uniquePosTableName):
+    variantPositionFileName = studyFilesInputDir + os.path.sep + "unique_variant_positions.gz"
+    sql = SQLContext(sparkContext)
+    variants = sql.read.format("org.apache.spark.sql.cassandra"). \
+        load(keyspace=keyspaceName, table=uniquePosTableName)
+    variants.registerTempTable("variantsTable")
+    resultDF = sql.sql("select chrom,start_pos from variantsTable order by 1,2")
+    iterator = resultDF.toLocalIterator()
+    with gzip.open(variantPositionFileName, "wb") as variantPositionFileHandle:
+        for result in iterator:
+            # For some reason, if you don't store the output of the write, every write result is echoed to the screen!!!
+            discardOutput = variantPositionFileHandle.write(result["chrom"] + "\t" + str(result["start_pos"])
+                                                            + os.linesep)
+    return variantPositionFileName
+
 def mainFunc():
     if len(sys.argv) != 8:
         print("Usage: ProcessVariantMatches.py <Study PRJ ID> <Default Genotype> <Missing Genotype> <Full Path to study files> <Cassandra node IP1> <Cassandra node IP2> <BCF Tools Directory>")
         sys.exit(1)
 
     # region Parse arguments
-    studyName = sys.argv[1]
-    defaultGenotype = sys.argv[2]
-    missingGenotype = sys.argv[3]
-    studyFilesInputDir = sys.argv[4]
+    studyName,defaultGenotype, missingGenotype,studyFilesInputDir = sys.argv[1:5]
     cassandraNodeIPs = [sys.argv[5], sys.argv[6]]
     bcfToolsDir = sys.argv[7]
     # endregion
 
     # region Get the list of study files
-    os.chdir(studyFilesInputDir)
-    dirContents = glob.glob("*_filtervcf.gz")
-    dirContents.sort()
-    studyVCFFileNames = dirContents
+    studyVCFFileNames = SSMergeCommonUtils.getVCFFileNames(studyFilesInputDir)
     # endregion
 
     # region Initialize variant, header, sample insert log and study table names in Cassandra
@@ -252,30 +265,11 @@ def mainFunc():
     # endregion
 
     # region Obtain the total number of variants from across the samples as determined from the first pass
-    variantPositionFileName = studyFilesInputDir + os.path.sep + "unique_variant_positions.gz"
-    rows = local_session_var.execute("select tot_num_variants from {0}.{1};".format(keyspaceName, studyInfoTableName))
-    numTotVariants = 0
-    if rows:
-        rows = iter(rows)
-        numTotVariants = rows.next().tot_num_variants
-    else:
-        raise Exception("Could not obtain number of variants for the study: {0} from the table: {1}.{2}"
-                        .format(studyName, keyspaceName, studyInfoTableName))
+    numTotVariants = getTotNumVariantsForStudy(keyspaceName, local_session_var, studyInfoTableName, studyName)
     # endregion
 
     # region Generate a position file with the unique set of variant positions determined from the first pass
-    sql = SQLContext(sc)
-    variants = sql.read.format("org.apache.spark.sql.cassandra").\
-                   load(keyspace=keyspaceName, table=uniquePosTableName)
-    variants.registerTempTable("variantsTable")
-    resultDF = sql.sql("select chrom,start_pos from variantsTable order by 1,2")
-    iterator = resultDF.toLocalIterator()
-
-    variantPositionFileHandle = gzip.open(variantPositionFileName, "wb")
-    for result in iterator:
-        # For some reason, if you don't store the output of the write, every write result is echoed to the screen!!!
-        discardOutput = variantPositionFileHandle.write(result["chrom"] + "\t" + str(result["start_pos"]) + os.linesep)
-    variantPositionFileHandle.close()
+    variantPositionFileName = genVarPosFile(keyspaceName, sc, studyFilesInputDir, uniquePosTableName)
     # endregion
 
     # region Scan each sample file against the unique set of variant positions
@@ -305,6 +299,10 @@ def mainFunc():
     local_cluster_var.shutdown()
     sc.stop()
     # endregion
+
+
+
+
 
 if __name__ == "__main__":
     mainFunc()

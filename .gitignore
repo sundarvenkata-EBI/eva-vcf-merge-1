@@ -103,3 +103,5 @@ ENV/
 # Intellij Idea project
 *.iml
 .idea
+
+SingleSampleMerge/tests/Proband-1152_filtered_variant_count\.txt

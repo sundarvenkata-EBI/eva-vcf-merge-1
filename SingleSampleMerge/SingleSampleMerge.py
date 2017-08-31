@@ -405,9 +405,6 @@ def mainFunc():
 
     if not atleastOneError:
 
-        # Count the number of distinct variant positions in the sample VCF files
-        totDistinctVarPosInSampleFiles = SSMergeCommonUtils.getTotDistinctVarPosFromSampleFiles(studyFilesInputDir)
-
         # Count the number of variants from the variants table
         chromChunkSet = getChromChunkSet(local_session_var, keyspaceName, uniquePosTableName)
         chromChunkSetRDD = sc.parallelize(chromChunkSet)
@@ -427,9 +424,6 @@ def mainFunc():
 
         print("******************************************************************************************************")
         print("Number of variants as counted from source files: {0}".format(str(totVarsInSampleFiles)))
-        print("Number of distinct variant positions as counted from source files: {0}".format(
-            str(totDistinctVarPosInSampleFiles)))
-
         print("Number of variant inserts recorded as retrieved from Cassandra: {0}".format(str(totVarsInCassandra)))
         print("Number of distinct variant positions as retrieved from Cassandra: {0}".format(
             str(totDistinctVarPosInCassandra)))
@@ -446,7 +440,6 @@ def mainFunc():
     local_cluster_var.shutdown()
     sc.stop()
     # endregion
-
 
 if __name__ == '__main__':
     mainFunc()

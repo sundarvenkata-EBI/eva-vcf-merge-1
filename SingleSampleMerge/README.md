@@ -63,7 +63,7 @@ Apache Spark job that:
     ![headers_table](images/headers_table.jpg)
     3. **variant_ksp.sample_defaults_\<Study PRJ ID\>** (ex: variant_ksp.sample_defaults_PRJEB21300)
     ![sample_defaults_table](images/sample_defaults_table.jpg)
-    4. **variant_ksp.sample_insert_log** - Commit log that shows the running log of sample files that have been inserted (as denoted by the insert_flag).
+    4. **variant_ksp.sample_insert_log_\<Study PRJ ID\>** - Commit log that shows the running log of sample files that have been inserted (as denoted by the insert_flag).
     ![sample_insert_log_table](images/sample_insert_log.jpg)
     5. **variant_ksp.study_info_\<Study PRJ ID\>** (ex: variant_ksp.study_info_PRJEB21300) - Total and distinct counts of variants that were inserted from all the samples.
     ![study_info_table](images/study_info_table.jpg)

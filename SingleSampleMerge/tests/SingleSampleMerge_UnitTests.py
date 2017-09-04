@@ -1,5 +1,6 @@
 import unittest, tempfile, SingleSampleMerge, ftplib, os, re, hashlib, gzip, SSMergeCommonUtils
 from cassandra.cluster import Cluster
+from pyspark import SparkConf, SparkContext, SQLContext
 
 
 def downloadVCFFileFromFTP(ftpDir, studyFilesInputDir, vcfFileName):
@@ -167,11 +168,11 @@ class TestStringDiffIndex(unittest.TestCase):
 
     def test_updateProcessingStatus(self):
         proc_status = "variants_filtered"
-        self.ssMergeObj.update_processing_status(proc_status)
+        self.ssMergeObj.update_processing_status(proc_status, 0)
         self.assertEqual(self.ssMergeObj.getSampleProcessedStatus(), proc_status)
 
         proc_status = "variants_inserted"
-        self.ssMergeObj.update_processing_status(proc_status)
+        self.ssMergeObj.update_processing_status(proc_status, 100)
         self.assertEqual(self.ssMergeObj.getSampleProcessedStatus(), proc_status)
 
     def createSingleSampleMergeObj(self):

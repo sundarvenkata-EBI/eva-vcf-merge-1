@@ -14,14 +14,9 @@ Apache Spark job that:
  1. processes the individual study files in parallel 
  2. filters out monomorphic references 
  3. inserts the variants into Apache Cassandra
- 4. determines the unique set of variant positions + their post-normalization positions 
-
-**ProcessVariantMatches.py** - Second pass
-
-Apache Spark job that:
- 1. scans the individual samples for the variant positions obtained from the first pass (i.e., after SingleSampleMerge.py has run). 
- 2. inserts the _**non-default**_ genotypes encountered in each sample into Cassandra (based on how many positions match in the individual sample files, a default genotype is assumed for the entire sample in order to minimize the number of inserts made into Cassandra. For example: 0/0 for >50% match, ./. otherwise).
-
+ 4. determines the unique set of variant positions + their post-normalization positions
+ 5. scans the individual samples for the variant positions obtained from the first pass (i.e., after SingleSampleMerge.py has run).
+ 6. inserts the _**non-default**_ genotypes encountered in each sample into Cassandra (based on how many positions match in the individual sample files, a default genotype is assumed for the entire sample in order to minimize the number of inserts made into Cassandra. For example: 0/0 for >50% match, ./. otherwise).
 
 **spark_cluster_creation** - Ansible playbook to create a Spark cluster.  
 
@@ -41,32 +36,25 @@ Apache Spark job that:
 
 5. Run SingleSampleMerge.py with arguments as follows:
 
-   ```export SPARK_LOCAL_IP=<MASTER_NODE_IP> && ~/spark-2.2.0-bin-hadoop2.7/spark-submit --packages com.datastax.spark:spark-cassandra-connector_2.11:2.0.1 SingleSampleMerge.py <Study PRJ ID> <Study directory> <Cassandra Node IP1> <Cassandra Node IP2> <BCFTools directory>```
+   ```export SPARK_LOCAL_IP=<MASTER_NODE_IP> && ~/spark-2.2.0-bin-hadoop2.7/spark-submit --packages com.datastax.spark:spark-cassandra-connector_2.11:2.0.1 SingleSampleMerge.py <Study PRJ ID> <Default Genotype> <Missing Genotype> <Full Path to study files> <Cassandra node IP1> <Cassandra node IP2> <BCF Tools Directory>```
    
    Example:
    
-   ```export SPARK_LOCAL_IP=192.168.0.14 && ~/spark-2.2.0-bin-hadoop2.7/bin/spark-submit --packages com.datastax.spark:spark-cassandra-connector_2.11:2.0.1 SingleSampleMerge.py PRJEB21300 /mnt/glusterVol/mergevcfinput 192.168.0.18 192.168.0.23 /mnt/glusterVol/bcftools```
-
-6. If SingleSampleMerge.py ran successfully, run the ProcessVariantMatches.py as follows:
-
-   ```export SPARK_LOCAL_IP=<MASTER_NODE_IP> && ~/spark-2.2.0-bin-hadoop2.7/spark-submit --packages com.datastax.spark:spark-cassandra-connector_2.11:2.0.1 ProcessVariantMatches.py <Study PRJ ID> <Default Genotype> <Missing Genotype> <Full Path to study files> <Cassandra node IP1> <Cassandra node IP2> <BCF Tools Directory>```
+   ```export SPARK_LOCAL_IP=192.168.0.14 && ~/spark-2.2.0-bin-hadoop2.7/bin/spark-submit --packages com.datastax.spark:spark-cassandra-connector_2.11:2.0.1 SingleSampleMerge.py PRJEB21300 0/0 ./. /mnt/glusterVol/mergevcfinput 192.168.0.18 192.168.0.23 /mnt/glusterVol/bcftools```
    
-   Example:
-   
-   ```export SPARK_LOCAL_IP=192.168.0.14 && ~/spark-2.2.0-bin-hadoop2.7/spark-submit --packages com.datastax.spark:spark-cassandra-connector_2.11:2.0.1 ProcessVariantMatches.py PRJEB21300 0/0 ./.  /mnt/glusterVol/mergevcfinput 192.168.0.18 192.168.0.23 /mnt/glusterVol/bcftools```
-   
-7. After the above steps are run, the following output tables are created in Cassandra in the "variant_ksp" keyspace:
+6. After the above step runs to completion, the following output tables are created in Cassandra in the "variant_ksp" keyspace:
 
     1. **variant_ksp.variants_\<Study PRJ ID\>** (ex: variant_ksp.variants_PRJEB21300) - Variant information processed from individual sample files ordered by Chromosome, Start position and Sample Name.
-    ![variants_table](images/variants_table.jpg)
+    ![variants_table](images/variants_table.png)
     2. **variant_ksp.headers_\<Study PRJ ID\>** (ex: variant_ksp.headers_PRJEB21300) - Header information for each sample file that was processed.
-    ![headers_table](images/headers_table.jpg)
+    ![headers_table](images/headers_table.png)
     3. **variant_ksp.sample_defaults_\<Study PRJ ID\>** (ex: variant_ksp.sample_defaults_PRJEB21300)
-    ![sample_defaults_table](images/sample_defaults_table.jpg)
+    ![sample_defaults_table](images/sample_defaults_table.png)
     4. **variant_ksp.sample_insert_log_\<Study PRJ ID\>** - Commit log that shows the running log of sample files that have been inserted (as denoted by the insert_flag).
-    ![sample_insert_log_table](images/sample_insert_log.jpg)
+    ![sample_insert_log_table](images/sample_insert_log_table.png)
     5. **variant_ksp.study_info_\<Study PRJ ID\>** (ex: variant_ksp.study_info_PRJEB21300) - Total and distinct counts of variants that were inserted from all the samples.
-    ![study_info_table](images/study_info_table.jpg)
-    6. **variant_ksp.uniq_pos_\<Study PRJ ID\>** (ex: variant_ksp.uniq_pos_PRJEB21300) - Unique set of variant positions (includes both post-normalization and pre-normalization) scanned from all the VCF files during the first pass. 
+    ![study_info_table](images/study_info_table.png)
+    6. **variant_ksp.uniq_pos_\<Study PRJ ID\>** (ex: variant_ksp.uniq_pos_PRJEB21300) - Unique set of variant positions (includes both post-normalization and pre-normalization) scanned from all the VCF files during the first pass.
+    ![study_info_table](images/uniq_pos_table.png)
     
 8. The output tables above should be used to sequentially process the variant records for the study and create a single VCF file that can be consumed by the [EVA-pipeline](https://github.com/EBIvariation/eva-pipeline/).

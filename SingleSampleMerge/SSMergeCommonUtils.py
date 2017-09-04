@@ -11,6 +11,7 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
+import hashlib
 import socket, glob, os, subprocess
 
 def getSampleName(bcfToolsDir, vcfFileName):
@@ -120,6 +121,12 @@ def getErrFileContents(errFileName):
         if errFileContents: return errFileContents
         return []
 
+def getUniqueVariantID(sampleName, chromosome, position, ref, alt):
+    variantID = chromosome + "_" + str(position).zfill(12) + "_" + hashlib.md5(ref + "_" + alt).hexdigest() \
+                + "_" + sampleName.zfill(20)
+    return variantID
+
+
 def stringDiffIndex(string1, string2):
     """
     Return index of difference between two strings
@@ -144,5 +151,7 @@ def stringDiffIndex(string1, string2):
 # For ex: variant at chr 1 and position 1M will be written to a different node than the variant at chr 2 and position 2M.
 CHR_POS_CHUNKSIZE = int(1e6)
 
+SMALL_QUERY_TIMEOUT_IN_SECS = 120
 LARGE_QUERY_TIMEOUT_IN_SECS = 12000
 BATCH_WRITE_TIMEOUT_IN_SECS = 1200
+SPARK_CASSANDRA_READ_TIMEOUT_IN_MS = 1200000

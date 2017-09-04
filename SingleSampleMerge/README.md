@@ -8,14 +8,14 @@ For a detailed discussion, see Proposal#2 in this [page](https://www.ebi.ac.uk/s
       
 # Project files
 
-**SingleSampleMerge.py** - First pass
+**SingleSampleMerge.py** 
 
 Apache Spark job that:
  1. processes the individual study files in parallel 
  2. filters out monomorphic references 
  3. inserts the variants into Apache Cassandra
  4. determines the unique set of variant positions + their post-normalization positions
- 5. scans the individual samples for the variant positions obtained from the first pass (i.e., after SingleSampleMerge.py has run).
+ 5. scans the individual samples for the variant positions obtained from the above steps.
  6. inserts the _**non-default**_ genotypes encountered in each sample into Cassandra (based on how many positions match in the individual sample files, a default genotype is assumed for the entire sample in order to minimize the number of inserts made into Cassandra. For example: 0/0 for >50% match, ./. otherwise).
 
 **spark_cluster_creation** - Ansible playbook to create a Spark cluster.  

@@ -1,3 +1,17 @@
+# Copyright 2017 EMBL - European Bioinformatics Institute
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#      http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
 import unittest, tempfile, SingleSampleMerge, ftplib, os, re, hashlib, gzip, SSMergeCommonUtils
 from cassandra.cluster import Cluster
 from pyspark import SparkConf, SparkContext, SQLContext
@@ -114,7 +128,7 @@ class TestStringDiffIndex(unittest.TestCase):
         expectedPositionResults.add("1\t1\t1000048")
         expectedPositionResults.add("1\t1\t1000050")
 
-        self.ssMergeObj.writeVariantToCassandra(linesToWrite)
+        self.ssMergeObj.write_variants_to_cassandra(linesToWrite)
         # endregion
 
         resultRows = self.ssMergeObj.cassandraSession.execute("select * from {0}.{1}"
@@ -155,7 +169,7 @@ class TestStringDiffIndex(unittest.TestCase):
                 else:
                     break
         headerLines = headerLines.strip()
-        self.ssMergeObj.writeHeaderToCassandra(headerLines)
+        self.ssMergeObj.write_header_to_cassandra(headerLines)
         results = self.ssMergeObj.cassandraSession.execute("select header from {0}.{1} where samplename = '{2}' "
                                                            "allow filtering;"
                                                  .format(self.ssMergeObj.keyspaceName, self.ssMergeObj.headerTableName,
@@ -169,11 +183,11 @@ class TestStringDiffIndex(unittest.TestCase):
     def test_updateProcessingStatus(self):
         proc_status = "variants_filtered"
         self.ssMergeObj.update_processing_status(proc_status, 0)
-        self.assertEqual(self.ssMergeObj.getSampleProcessedStatus(), proc_status)
+        self.assertEqual(self.ssMergeObj.get_sample_processed_status(), proc_status)
 
         proc_status = "variants_inserted"
         self.ssMergeObj.update_processing_status(proc_status, 100)
-        self.assertEqual(self.ssMergeObj.getSampleProcessedStatus(), proc_status)
+        self.assertEqual(self.ssMergeObj.get_sample_processed_status(), proc_status)
 
     def createSingleSampleMergeObj(self):
         bcfToolsDir = os.getenv("HOME") + os.path.sep + "bcftools"

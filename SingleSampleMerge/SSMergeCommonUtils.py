@@ -1,4 +1,4 @@
-# Copyright 2014-2017 EMBL - European Bioinformatics Institute
+# Copyright 2017 EMBL - European Bioinformatics Institute
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -86,7 +86,7 @@ def getTotDistinctVarPosFromSampleFiles(vcfInputDirectory):
 
 def getVCFFileNames(studyFilesInputDir):
     """
-    Given an input directory with all the submitted files for a study, return just the VCF files
+    Given an input directory with all the submitted files for a study, return just the VCF files sorted alphabetically
 
     :param studyFilesInputDir: Input directory containing the submitted files
     :type studyFilesInputDir: str
@@ -150,7 +150,7 @@ def stringDiffIndex(string1, string2):
 # Determines which variants are written to which nodes based on their chromosome and position.
 # For ex: variant at chr 1 and position 1M will be written to a different node than the variant at chr 2 and position 2M.
 CHR_POS_CHUNKSIZE = int(1e6)
-
+LINE_BATCH_SIZE = 50
 SMALL_QUERY_TIMEOUT_IN_SECS = 120
 LARGE_QUERY_TIMEOUT_IN_SECS = 12000
 BATCH_WRITE_TIMEOUT_IN_SECS = 1200

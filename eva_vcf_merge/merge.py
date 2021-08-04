@@ -11,10 +11,13 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
+
 import os
 import shutil
 
 from ebi_eva_common_pyutils.nextflow import NextFlowPipeline, NextFlowProcess
+
+from eva_vcf_merge.config import MergeConfig
 
 
 def generate_pipeline(vcf_groups, bcftools_binary, output_dir):
@@ -34,21 +37,29 @@ def generate_pipeline(vcf_groups, bcftools_binary, output_dir):
     return NextFlowPipeline(dependencies)
 
 
-def horizontal_merge(vcf_groups, cfg):
+def horizontal_merge(vcf_groups, cfg=MergeConfig()):
     """
     Merge groups of vcfs horizontally, i.e. by sample, using bcftools.
 
     :param vcf_groups: dict mapping a string (e.g. an analysis alias) to a group of vcf files to be merged
     :param cfg: MergeConfig with necessary configuration
     """
+    # TODO make the filelists...
     pipeline = generate_pipeline(vcf_groups, cfg.bcftools_binary, cfg.output_dir)
     workflow_file = os.path.join(cfg.output_dir, 'merge_workflow.nf')
-    work_dir = os.path.join(cfg.output_dir, 'work')
     pipeline.run_pipeline(
         workflow_file_path=workflow_file,
-        working_dir=work_dir,
+        working_dir=cfg.output_dir,
         nextflow_binary_path=cfg.nextflow_binary,
         nextflow_config_path=cfg.nextflow_config
     )
-    # clean up work dir
-    shutil.rmtree(work_dir)
+
+
+def vertical_concat(vcf_groups, cfg=MergeConfig()):
+    """
+    Merge groups of vcfs vertically, i.e. concatenation.
+
+    :param vcf_groups: dict mapping a string (e.g. an analysis alias) to a group of vcf files to be merged
+    :param cfg: MergeConfig with necessary configuration
+    """
+    raise NotImplementedError('Vertical concatenation not yet implemented.')

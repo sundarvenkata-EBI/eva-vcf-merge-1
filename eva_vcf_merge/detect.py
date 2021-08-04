@@ -11,6 +11,7 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
+
 import itertools
 from enum import Enum
 
@@ -29,11 +30,12 @@ class MergeType(Enum):
     VERTICAL = 'vertical'
 
 
-def vcf_merge_type(vcf_files):
+def detect_merge_type(vcf_files):
     """
+    Detect what type of merge should be used for a list of vcfs.
 
-    :param vcf_files:
-    :return:
+    :param vcf_files: list of vcf filepaths
+    :return: MergeType or None if it could not be detect
     """
     file_to_sample_names = {}
     # retrieve all the sample_names from the VCF files

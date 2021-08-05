@@ -17,6 +17,8 @@ from enum import Enum
 
 import pysam
 
+from eva_vcf_merge.utils import are_all_elements_unique
+
 
 class SampleSetType(Enum):
     SINGLE_SET = 'single set'
@@ -32,7 +34,7 @@ class MergeType(Enum):
 
 def detect_merge_type(vcf_files):
     """
-    Detect what type of merge should be used for a list of vcfs.
+    Detect what type of merge should be used for a list of VCFs.
 
     :param vcf_files: list of vcf filepaths
     :return: MergeType or None if it could not be detect
@@ -51,15 +53,12 @@ def detect_merge_type(vcf_files):
 
 
 def get_samples_from_vcf(vcf_file):
-    """
-    Get the list of samples present in a single VCF file
-    """
+    """Get the list of samples present in a single VCF file."""
     with pysam.VariantFile(vcf_file, 'r') as vcf_in:
         samples = list(vcf_in.header.samples)
     return samples
 
 
-# TODO case sensitive, order sensitive?
 def compare_sample_sets(list_of_sample_names):
     set_of_sample_names = set(tuple(s) for s in list_of_sample_names)
     set_of_sample_names_sorted = set([tuple(sorted(list(s))) for s in set_of_sample_names])
@@ -72,13 +71,3 @@ def compare_sample_sets(list_of_sample_names):
     elif len(set_of_sample_names_sorted) == len(list_of_sample_names):
         return SampleSetType.OVERLAPPING_SETS
     return None
-
-
-def are_all_elements_unique(elements):
-    """Check if there are any repeated element in the list of element. If yes return False otherwise return True"""
-    unique_elements = set()
-    for element in elements:
-        if element in unique_elements:
-            return False
-        unique_elements.add(element)
-    return True

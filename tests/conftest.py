@@ -1,3 +1,4 @@
+import glob
 import os
 import shutil
 
@@ -19,17 +20,44 @@ def merge_config():
     shutil.rmtree(output_dir)
 
 
+def clean_up_resources():
+    # cleans up any new files created by tests in resources directory
+    for ext in ('*.gz', '*.tbi', '*.csi'):
+        for fn in glob.glob(os.path.join(resources_dir, ext)):
+            os.remove(fn)
+
+
 @pytest.fixture
-def horizontal_merge_vcfs():
-    return [
+def unique_samples_vcfs():
+    yield [
         os.path.join(resources_dir, 'chr1_samplesAB.vcf'),
         os.path.join(resources_dir, 'chr1_samplesCD.vcf')
     ]
+    clean_up_resources()
 
 
 @pytest.fixture
-def vertical_merge_vcfs():
-    return [
+def unique_samples_vcfs_2():
+    yield [
+        os.path.join(resources_dir, 'chr2_samplesAB.vcf'),
+        os.path.join(resources_dir, 'chr2_samplesCDE.vcf')
+    ]
+    clean_up_resources()
+
+
+@pytest.fixture
+def same_samples_vcfs():
+    yield [
         os.path.join(resources_dir, 'chr1_samplesAB.vcf'),
         os.path.join(resources_dir, 'chr2_samplesAB.vcf')
     ]
+    clean_up_resources()
+
+
+@pytest.fixture
+def overlapping_samples_vcfs():
+    yield [
+        os.path.join(resources_dir, 'chr1_samplesCD.vcf'),
+        os.path.join(resources_dir, 'chr2_samplesCDE.vcf')
+    ]
+    clean_up_resources()

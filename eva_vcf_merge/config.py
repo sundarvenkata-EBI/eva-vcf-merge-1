@@ -14,8 +14,16 @@
 
 
 class MergeConfig:
-    def __init__(self, bcftools_binary='bcftools', nextflow_binary='nextflow', nextflow_config=None, output_dir='.'):
+    def __init__(
+            self,
+            bgzip_binary='bgzip',
+            bcftools_binary='bcftools',
+            nextflow_binary='nextflow',
+            nextflow_config=None,
+            output_dir='.'
+    ):
+        self.bgzip_binary = bgzip_binary
+        self.bcftools_binary = bcftools_binary
         self.nextflow_binary = nextflow_binary
         self.nextflow_config = nextflow_config
-        self.bcftools_binary = bcftools_binary
         self.output_dir = output_dir

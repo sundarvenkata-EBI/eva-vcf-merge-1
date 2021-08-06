@@ -32,8 +32,9 @@ class VCFMerger:
         Merge groups of vcfs horizontally, i.e. by sample, using bcftools.
 
         :param vcf_groups: dict mapping a string (e.g. an analysis alias) to a group of vcf files to be merged
+        :returns: list of merged filenames
         """
-        pipeline = self.generate_horizontal_merge_pipeline(vcf_groups)
+        pipeline, merged_filenames = self.generate_horizontal_merge_pipeline(vcf_groups)
         workflow_file = os.path.join(self.output_dir, 'merge_workflow.nf')
         pipeline.run_pipeline(
             workflow_file_path=workflow_file,
@@ -41,6 +42,7 @@ class VCFMerger:
             nextflow_binary_path=self.nextflow_binary,
             nextflow_config_path=self.nextflow_config
         )
+        return merged_filenames
 
     def vertical_concat(self, vcf_groups):
         """
@@ -51,7 +53,14 @@ class VCFMerger:
         raise NotImplementedError('Vertical concatenation not yet implemented.')
 
     def generate_horizontal_merge_pipeline(self, vcf_groups):
+        """
+        Generate horizontal merge pipeline, including compressing and indexing VCFs.
+
+        :param vcf_groups: dict mapping a string to a group of vcf files to be merged
+        :return: complete NextflowPipeline and list of merged filenames
+        """
         dependencies = {}
+        merged_filenames = []
         for i, (alias, vcfs) in enumerate(vcf_groups.items()):
             index_processes = []
             compressed_vcfs = []
@@ -81,4 +90,6 @@ class VCFMerger:
             )
             # each alias's merge process depends on all index processes
             dependencies[merge_process] = index_processes
-        return NextFlowPipeline(dependencies)
+            merged_filenames.append(merged_filename)
+
+        return NextFlowPipeline(dependencies), merged_filenames

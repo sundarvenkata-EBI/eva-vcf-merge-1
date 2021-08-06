@@ -26,9 +26,7 @@ def are_all_elements_unique(elements):
 
 
 def write_files_to_list(files, alias, output_dir):
-    """
-    Write the list of files to a path built from alias and output_dir.
-    """
+    """Write the list of files to a path built from alias and output_dir."""
     list_filename = os.path.join(output_dir, f"{alias}_files.list")
     os.makedirs(os.path.dirname(list_filename), exist_ok=True)
     with open(list_filename, "w") as handle:

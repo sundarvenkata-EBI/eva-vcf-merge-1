@@ -1,3 +1,3 @@
 # EVA VCF Merge
 
-Merge all the things.
+Library to merge VCF files horizontally and vertically.

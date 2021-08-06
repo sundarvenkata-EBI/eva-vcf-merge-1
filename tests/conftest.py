@@ -4,19 +4,26 @@ import shutil
 
 import pytest
 
-from eva_vcf_merge.config import MergeConfig
+from eva_vcf_merge.merge import VCFMerger
 
 tests_dir = os.path.dirname(__file__)
 resources_dir = os.path.join(tests_dir, 'resources')
 
 
 @pytest.fixture
-def merge_config():
+def vcf_merger():
     # create output directory
     output_dir = os.path.join(tests_dir, 'output')
     if not os.path.exists(output_dir):
         os.mkdir(output_dir)
-    yield MergeConfig(output_dir=output_dir)
+    # use standard executables for testing
+    yield VCFMerger(
+        bgzip_binary='bgzip',
+        bcftools_binary='bcftools',
+        nextflow_binary='nextflow',
+        nextflow_config=None,
+        output_dir=output_dir
+    )
     # clean up after merge tests
     shutil.rmtree(output_dir)
     for ext in ('*.gz', '*.tbi', '*.csi'):

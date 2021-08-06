@@ -32,7 +32,7 @@ class VCFMerger:
         Merge groups of vcfs horizontally, i.e. by sample, using bcftools.
 
         :param vcf_groups: dict mapping a string (e.g. an analysis alias) to a group of vcf files to be merged
-        :returns: list of merged filenames
+        :returns: dict of merged filenames
         """
         pipeline, merged_filenames = self.generate_horizontal_merge_pipeline(vcf_groups)
         workflow_file = os.path.join(self.output_dir, 'merge_workflow.nf')
@@ -57,10 +57,10 @@ class VCFMerger:
         Generate horizontal merge pipeline, including compressing and indexing VCFs.
 
         :param vcf_groups: dict mapping a string to a group of vcf files to be merged
-        :return: complete NextflowPipeline and list of merged filenames
+        :return: complete NextflowPipeline and dict of merged filenames
         """
         dependencies = {}
-        merged_filenames = []
+        merged_filenames = {}
         for i, (alias, vcfs) in enumerate(vcf_groups.items()):
             index_processes = []
             compressed_vcfs = []
@@ -90,6 +90,6 @@ class VCFMerger:
             )
             # each alias's merge process depends on all index processes
             dependencies[merge_process] = index_processes
-            merged_filenames.append(merged_filename)
+            merged_filenames[alias] = merged_filename
 
         return NextFlowPipeline(dependencies), merged_filenames

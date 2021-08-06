@@ -4,7 +4,7 @@ from eva_vcf_merge.detect import compare_sample_sets, SampleSetType, MergeType, 
 def test_detect_merge_type(unique_samples_vcfs, same_samples_vcfs, overlapping_samples_vcfs):
     assert detect_merge_type(unique_samples_vcfs) == MergeType.HORIZONTAL
     assert detect_merge_type(same_samples_vcfs) == MergeType.VERTICAL
-    assert detect_merge_type(overlapping_samples_vcfs) is None
+    assert detect_merge_type(overlapping_samples_vcfs) == None
 
 
 def test_compare_sample_sets():

@@ -20,15 +20,14 @@ from eva_vcf_merge.config import MergeConfig
 from eva_vcf_merge.utils import write_files_to_list
 
 
-# TODO deal with invalid process names
 def generate_pipeline(vcf_groups, bgzip_binary, bcftools_binary, output_dir):
     dependencies = {}
-    for alias, vcfs in vcf_groups.items():
+    for i, (alias, vcfs) in enumerate(vcf_groups.items()):
         index_processes = []
         compressed_vcfs = []
-        for i, vcf in enumerate(vcfs):
+        for j, vcf in enumerate(vcfs):
             index_process = NextFlowProcess(
-                process_name=f'index_{alias}_{i}',
+                process_name=f'index_{i}_{j}',
                 command_to_run=f'{bcftools_binary} index -c {vcf}.gz'
             )
             index_processes.append(index_process)
@@ -36,7 +35,7 @@ def generate_pipeline(vcf_groups, bgzip_binary, bcftools_binary, output_dir):
                 compressed_vcfs.append(vcf)
             else:
                 compress_process = NextFlowProcess(
-                    process_name=f'compress_{alias}_{i}',
+                    process_name=f'compress_{i}_{j}',
                     command_to_run=f'{bgzip_binary} -c {vcf} > {vcf}.gz'
                 )
                 # each file's index depends only on compress (if present)
@@ -46,7 +45,7 @@ def generate_pipeline(vcf_groups, bgzip_binary, bcftools_binary, output_dir):
         list_filename = write_files_to_list(compressed_vcfs, alias, output_dir)
         merged_filename = os.path.join(output_dir, f'{alias}_merged.vcf.gz')
         merge_process = NextFlowProcess(
-            process_name=f'merge_{alias}',
+            process_name=f'merge_{i}',
             command_to_run=f'{bcftools_binary} merge --merge all --file-list {list_filename} '
                            f'--threads 3 -O z -o {merged_filename}'
         )

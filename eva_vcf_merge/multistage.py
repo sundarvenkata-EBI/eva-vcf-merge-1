@@ -1,3 +1,17 @@
+# Copyright 2021 EMBL - European Bioinformatics Institute
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#      http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
 import math
 import os
 
@@ -46,7 +60,7 @@ def get_multistage_vertical_concat_pipeline(
         files_to_concat_list = write_files_to_concat_list(files_in_batch, stage, batch, concat_processing_dir)
         output_vcf_file = get_output_vcf_file_name(stage, batch, concat_processing_dir)
 
-        # TODO log file?  log_file_name = os.path.join(concat_processing_dir, f"{concat_stage_batch_name}.log")
+        # separate concat & index processes
         concat_process = NextFlowProcess(
             process_name=f"concat_stage{stage}_batch{batch}",
             command_to_run=f"{bcftools_binary} concat --allow-overlaps --remove-duplicates "

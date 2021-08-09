@@ -20,3 +20,13 @@ def test_horizontal_merge_multiple_groups(vcf_merger, unique_samples_vcfs, uniqu
         '2': os.path.join(vcf_merger.output_dir, '2_merged.vcf.gz')
     }
     assert_all_files_present(filenames.values())
+
+
+def test_vertical_merge(vcf_merger, same_samples_vcfs):
+    vcfs = {'alias': same_samples_vcfs}
+    filenames = vcf_merger.vertical_merge(vcfs)
+    assert filenames == {'alias': os.path.join(vcf_merger.output_dir, 'alias_merged.vcf.gz')}
+    assert_all_files_present(filenames.values())
+
+
+# TODO test multistage merge...

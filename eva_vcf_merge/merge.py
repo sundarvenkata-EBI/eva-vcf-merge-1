@@ -111,7 +111,7 @@ class VCFMerger:
         full_pipeline = NextFlowPipeline()
         merged_filenames = {}
         for i, (alias, vcfs) in enumerate(vcf_groups.items()):
-            deps, _, compressed_vcfs = self.compress_and_index(i, vcfs)
+            deps, index_processes, compressed_vcfs = self.compress_and_index(i, vcfs)
             compress_pipeline = NextFlowPipeline(deps)
             # TODO use alias in the merged filename somehow?
             concat_pipeline, merged_filename = get_multistage_vertical_concat_pipeline(
@@ -136,20 +136,20 @@ class VCFMerger:
         index_processes = []
         compressed_vcfs = []
         for i, vcf in enumerate(vcfs):
-            index_process = NextFlowProcess(
-                process_name=f'index_{alias_index}_{i}',
-                command_to_run=f'{self.bcftools_binary} index -c {vcf}.gz'
-            )
-            index_processes.append(index_process)
-            if vcf.endswith('gz'):
-                compressed_vcfs.append(vcf)
-            else:
+            compress_process = None
+            if not vcf.endswith('gz'):
                 compress_process = NextFlowProcess(
                     process_name=f'compress_{alias_index}_{i}',
                     command_to_run=f'{self.bgzip_binary} -c {vcf} > {vcf}.gz'
                 )
-                # each file's index depends only on compress (if present)
-                dependencies[index_process] = [compress_process]
-                compressed_vcfs.append(f'{vcf}.gz')
+                vcf = f'{vcf}.gz'
+            compressed_vcfs.append(vcf)
+            index_process = NextFlowProcess(
+                process_name=f'index_{alias_index}_{i}',
+                command_to_run=f'{self.bcftools_binary} index -f -c {vcf}'
+            )
+            index_processes.append(index_process)
+            # each file's index depends only on compress (if present)
+            dependencies[index_process] = [compress_process] if compress_process else []
         # TODO preferably return a NextFlowPipeline rather than dependencies & final processes
         return dependencies, index_processes, compressed_vcfs

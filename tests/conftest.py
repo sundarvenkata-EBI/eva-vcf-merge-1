@@ -61,3 +61,14 @@ def overlapping_samples_vcfs():
         os.path.join(resources_dir, 'chr1_samplesCD.vcf'),
         os.path.join(resources_dir, 'chr2_samplesCDE.vcf')
     ]
+
+
+@pytest.fixture
+def many_vcfs_to_concat():
+    return [
+        os.path.join(resources_dir, 'concat', 's0.vcf.gz'),
+        os.path.join(resources_dir, 'concat', 's1.vcf.gz'),
+        os.path.join(resources_dir, 'concat', 's2.vcf.gz'),
+        os.path.join(resources_dir, 'concat', 's3.vcf.gz'),
+        os.path.join(resources_dir, 'concat', 's4.vcf.gz')
+    ]

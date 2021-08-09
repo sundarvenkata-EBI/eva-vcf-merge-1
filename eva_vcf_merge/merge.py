@@ -16,6 +16,7 @@ import os
 
 from ebi_eva_common_pyutils.nextflow import NextFlowPipeline, NextFlowProcess
 
+from eva_vcf_merge.multistage import get_multistage_vertical_concat_pipeline
 from eva_vcf_merge.utils import write_files_to_list
 
 
@@ -44,13 +45,23 @@ class VCFMerger:
         )
         return merged_filenames
 
-    def vertical_concat(self, vcf_groups):
+    def vertical_merge(self, vcf_groups, chunk_size=500):
         """
         Merge groups of vcfs vertically, i.e. concatenation.
 
         :param vcf_groups: dict mapping a string (e.g. an analysis alias) to a group of vcf files to be merged
+        :param chunk_size: number of vcfs to merge at once (default 500)
+        :returns: dict of merged filenames
         """
-        raise NotImplementedError('Vertical concatenation not yet implemented.')
+        pipeline, merged_filenames = self.generate_vertical_merge_pipeline(vcf_groups, chunk_size)
+        workflow_file = os.path.join(self.output_dir, "vertical_concat.nf")
+        # TODO resume?  logging?  check output directories / working directories....
+        pipeline.run_pipeline(
+            workflow_file_path=workflow_file,
+            nextflow_binary_path=self.nextflow_binary,
+            nextflow_config_path=self.nextflow_config
+        )
+        return merged_filenames
 
     def generate_horizontal_merge_pipeline(self, vcf_groups):
         """
@@ -93,3 +104,26 @@ class VCFMerger:
             merged_filenames[alias] = merged_filename
 
         return NextFlowPipeline(dependencies), merged_filenames
+
+    def generate_vertical_merge_pipeline(self, vcf_groups, chunk_size):
+        """
+        Generate vertical merge (concatenation) pipeline.
+
+        :param vcf_groups: dict mapping a string to a group of vcf files to be merged
+        :param chunk_size: number of vcfs to merge at once
+        :return: complete NextFlowPipeline and dict of merged filenames
+        """
+        full_pipeline = NextFlowPipeline()
+        merged_filenames = {}
+        for alias, vcfs in vcf_groups:
+            # TODO use alias?
+            # TODO compress first (i.e. not in the recursive call)
+            pipeline, merged_filename = get_multistage_vertical_concat_pipeline(
+                vcf_files=vcfs,
+                concat_chunk_size=chunk_size,
+                concat_processing_dir=self.output_dir,
+                bcftools_binary=self.bcftools_binary
+            )
+            NextFlowPipeline.join_pipelines(full_pipeline, pipeline)
+            merged_filenames[alias] = merged_filename
+        return full_pipeline, merged_filenames

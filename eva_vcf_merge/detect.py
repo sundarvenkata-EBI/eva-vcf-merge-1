@@ -21,14 +21,22 @@ from eva_vcf_merge.utils import are_all_elements_unique
 
 
 class SampleSetType(Enum):
+    # Same sample names in the same order, e.g. [(A, B), (A, B)]
     SINGLE_SET = 'single set'
+    # Same sample names but in different orders, e.g. [(A, B), (B, A)]
     UNSORTED_SINGLE_SET = 'unsorted single set'
+    # Distinct non-overlapping sample names, e.g. [(A, B), (C, D, E)]
     UNIQUE_SETS = 'unique sets'
+    # Overlapping sample names, e.g. [(A, B), (C, D, A)]
     OVERLAPPING_SETS = 'overlapping sets'
 
 
 class MergeType(Enum):
+    # Horizontally mergeable VCFs have non-overlapping sample sets and can be combined to create
+    # a single multi-sample file.
     HORIZONTAL = 'horizontal'
+    # Vertically mergeable VCFs have identical sample sets and can be combined to create a single
+    # multi-chromosome or multi-variant file.
     VERTICAL = 'vertical'
 
 
@@ -37,7 +45,7 @@ def detect_merge_type(vcf_files):
     Detect what type of merge should be used for a list of VCFs.
 
     :param vcf_files: list of vcf filepaths
-    :return: MergeType or None if it could not be detect
+    :return: MergeType or None if it could not be detected
     """
     file_to_sample_names = {}
     # retrieve all the sample_names from the VCF files
@@ -60,6 +68,12 @@ def get_samples_from_vcf(vcf_file):
 
 
 def compare_sample_sets(list_of_sample_names):
+    """
+    Compare sample names from different VCFs to determine whether they are identical, distinct, or overlapping.
+
+    :param list_of_sample_names: list of list of sample names in each VCF
+    :return: SampleSetType or None if it could not be detected
+    """
     set_of_sample_names = set(tuple(s) for s in list_of_sample_names)
     set_of_sample_names_sorted = set([tuple(sorted(list(s))) for s in set_of_sample_names])
     if len(set_of_sample_names) == 1:

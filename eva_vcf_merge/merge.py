@@ -65,21 +65,23 @@ class VCFMerger:
             index_processes = []
             compressed_vcfs = []
             for j, vcf in enumerate(vcfs):
-                index_process = NextFlowProcess(
-                    process_name=f'index_{i}_{j}',
-                    command_to_run=f'{self.bcftools_binary} index -c {vcf}.gz'
-                )
-                index_processes.append(index_process)
-                if vcf.endswith('gz'):
-                    compressed_vcfs.append(vcf)
-                else:
+                # compress vcf if needed
+                compress_process = None
+                if not vcf.endswith('gz'):
                     compress_process = NextFlowProcess(
                         process_name=f'compress_{i}_{j}',
                         command_to_run=f'{self.bgzip_binary} -c {vcf} > {vcf}.gz'
                     )
-                    # each file's index depends only on compress (if present)
-                    dependencies[index_process] = [compress_process]
-                    compressed_vcfs.append(f'{vcf}.gz')
+                    vcf = f'{vcf}.gz'
+
+                compressed_vcfs.append(vcf)
+                index_process = NextFlowProcess(
+                    process_name=f'index_{i}_{j}',
+                    command_to_run=f'{self.bcftools_binary} index -f -c {vcf}'
+                )
+                index_processes.append(index_process)
+                # each file's index depends only on compress (if present)
+                dependencies[index_process] = [compress_process] if compress_process else []
 
             list_filename = write_files_to_list(compressed_vcfs, alias, self.output_dir)
             merged_filename = os.path.join(self.output_dir, f'{alias}_merged.vcf.gz')
